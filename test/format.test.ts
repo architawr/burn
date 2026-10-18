@@ -60,3 +60,47 @@ describe("formatDelta", () => {
     expect(formatDelta(0)).toBe("<$0.01");
   });
 });
+
+describe("the newer helpers", () => {
+  it("formats budgets, durations and ages", async () => {
+    const { formatAgo, formatBudget, formatDuration } = await import("../src/format.js");
+    expect(formatBudget(10)).toBe("$10");
+    expect(formatBudget(7.5)).toBe("$7.50");
+    expect(formatDuration(18_000)).toBe("18s");
+    expect(formatDuration(62_000)).toBe("1m 02s");
+    expect(formatDuration(72 * 60_000)).toBe("1h 12m");
+    expect(formatDuration(51 * 3_600_000)).toBe("2d 3h");
+    expect(formatAgo(0, 12_000)).toBe("12s");
+    expect(formatAgo(0, 3 * 3_600_000)).toBe("3h");
+  });
+
+  it("names models without their provider", async () => {
+    const { modelName, providerName } = await import("../src/format.js");
+    expect(modelName("anthropic/claude-opus-4-5")).toBe("claude-opus-4-5");
+    expect(providerName("anthropic/claude-opus-4-5")).toBe("anthropic");
+    expect(modelName("Tools/summaries")).toBe("Tools and summaries");
+    expect(providerName("Tools/summaries")).toBe("");
+    expect(modelName("Other")).toBe("Other");
+  });
+
+  it("takes medians and turn multiples", async () => {
+    const { median, turnMultiple } = await import("../src/format.js");
+    const { sampleReport } = await import("./helpers.js");
+    expect(median([])).toBeNull();
+    expect(median([3, 1, 2])).toBe(2);
+    expect(median([1, 2, 3, 4])).toBe(2.5);
+    const { turns } = sampleReport();
+    expect(turnMultiple(turns[1]!, turns)).toBeCloseTo(2.92 / 0.4);
+    expect(turnMultiple(turns[1]!, turns.slice(0, 3))).toBeNull();
+  });
+
+  it("writes a Markdown summary", async () => {
+    const { summaryMarkdown } = await import("../src/format.js");
+    const { sampleReport } = await import("./helpers.js");
+    const md = summaryMarkdown(sampleReport(), { title: "burn UX", budget: 10 });
+    expect(md).toContain("### Cost of “burn UX”");
+    expect(md).toContain("**$4.82** of a $10 budget (48%) · 23 calls · 4 prompts");
+    expect(md).toContain("| claude-opus | 18 | $4.31 |");
+    expect(md).toContain("Cache hit rate 89%.");
+  });
+});

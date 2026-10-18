@@ -1,4 +1,5 @@
 import { useLayoutEffect, useState } from "react";
+import { pluginScopeAttributes } from "./lib/portal-scope.js";
 
 // bb's own markup, not an SDK contract: when it changes, the chip stays in the thread header.
 /** The row under the prompt box that ends with the context circle. */
@@ -37,6 +38,8 @@ export function useFooterMount(anchor: HTMLElement | null): HTMLElement | null {
     }
     const node = document.createElement("span");
     node.setAttribute("data-burn-chip", "");
+    // Outside the slot's root, so the plugin's scoped utilities need the scope on the node itself.
+    for (const [name, value] of Object.entries(pluginScopeAttributes())) node.setAttribute(name, value);
     node.className = "inline-flex shrink-0 items-center";
     let frame = 0;
     const place = (): void => {

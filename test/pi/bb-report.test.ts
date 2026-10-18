@@ -58,4 +58,43 @@ describe("createBbReporter", () => {
     await reporter.report(sampleReport(), "rpc");
     expect(fetch).toHaveBeenCalledTimes(3);
   });
+
+  it("keeps the latest policy bb replies with and ignores replies without one", async () => {
+    const policy = { budget: 10, stopAtBudget: true, notifyExpensiveTurn: false };
+    const reply = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(reply({ ok: true, policy }))
+      .mockResolvedValueOnce(reply({ ok: true }))
+      .mockResolvedValueOnce(reply({ ok: true, policy: { budget: "x" } }))
+      .mockResolvedValueOnce(new Response("not json", { status: 200 }))
+      .mockResolvedValueOnce(reply({ ok: true, policy: { ...policy, budget: null } }));
+    const reporter = createBbReporter({ env, fetch });
+    expect(reporter.policy()).toBeNull();
+    await reporter.report(sampleReport({ calls: 1 }), "rpc");
+    expect(reporter.policy()).toEqual(policy);
+    for (const calls of [2, 3, 4]) {
+      await reporter.report(sampleReport({ calls }), "rpc");
+      expect(reporter.policy()).toEqual(policy);
+    }
+    await reporter.report(sampleReport({ calls: 5 }), "rpc");
+    expect(reporter.policy()).toEqual({ ...policy, budget: null });
+  });
+
+  it("sends the v2 fields pi sets", async () => {
+    const fetch = vi.fn(async (_url: unknown, _init?: RequestInit) => ok());
+    const report = sampleReport({ running: true, budget: 10, stoppedAt: 123 });
+    await createBbReporter({ env, fetch: fetch as typeof globalThis.fetch }).report(report, "rpc");
+    const body = JSON.parse((fetch.mock.calls[0] as [string, RequestInit])[1].body as string);
+    expect(body.report).toMatchObject({ version: 2, running: true, budget: 10, stoppedAt: 123 });
+    expect(body.report.turns).toHaveLength(4);
+  });
+
+  it("cancels the body of a failed reply", async () => {
+    const cancel = vi.fn(async () => {});
+    const res = { ok: false, status: 500, body: { cancel }, json: vi.fn() };
+    await createBbReporter({ env, fetch: vi.fn(async () => res) as unknown as typeof globalThis.fetch }).report(sampleReport(), "rpc");
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(res.json).not.toHaveBeenCalled();
+  });
 });

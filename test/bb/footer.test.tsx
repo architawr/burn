@@ -59,6 +59,8 @@ describe("useFooterMount", () => {
     p.pane.append(anchor);
     const { result } = renderHook(() => useFooterMount(anchor));
     expect(result.current?.hasAttribute("data-burn-chip")).toBe(true);
+    // The build scopes the plugin's utilities to plugin roots; the footer is outside the slot's own.
+    expect(result.current?.hasAttribute("data-bb-plugin-root")).toBe(true);
     expect(result.current?.parentElement).toBe(p.group);
 
     const mount = result.current as HTMLElement;

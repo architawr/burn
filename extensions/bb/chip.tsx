@@ -1,199 +1,215 @@
-import {
-  type PluginThreadHeaderActionProps,
-  useRealtime,
-  useRealtimeConnectionState,
-  useRpc,
-  useSettings,
-} from "@get-bb/plugin-sdk/app";
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type PluginThreadHeaderActionProps, useBbNavigate, useSettings } from "@get-bb/plugin-sdk/app";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { cumulative, formatDelta, formatTokens, formatUsd, usageLabel } from "../../src/format.js";
-import { buildReport, type UsageReport } from "../../src/report.js";
-import { AreaChart, BarChart } from "./charts.js";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip.js";
+import { budgetFraction, budgetState } from "../../src/budget.js";
+import { formatAgo, formatBudget, formatDelta, formatTokens, formatUsd, isTokenOnly } from "../../src/format.js";
+import { BurnCard } from "./card.js";
+import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover.js";
+import type { UsageAnswer } from "./contract.js";
 import { useFooterMount } from "./footer.js";
+import { FlameIcon } from "./icon.js";
 import { cn } from "./lib/utils.js";
-import type { rpcContract } from "./server.js";
+import { openPanelIn, registerPanelOpener } from "./panel-requests.js";
+import { readPrefs } from "./prefs.js";
+import { copySummary } from "./summary.js";
+import { useNow, useUsage } from "./usage.js";
 
-const EMPTY_REPORT = buildReport([], undefined);
+/** A running thread whose report is this old has stopped reporting. */
+export const STALE_MS = 5 * 60_000;
+const FRESH_MS = 6000;
+const FADE_MS = 600;
 
-const errorText = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause));
+export type ChipTone = "default" | "near" | "over" | "waiting";
 
-const isSignalFor = (payload: unknown, threadId: string): boolean =>
-  payload === null || (typeof payload === "object" && (payload as { threadId?: unknown }).threadId === threadId);
-
-/** The thread's latest report, refetched on its own signal and after a reconnect (signals are not replayed). */
-export function useUsage(threadId: string): { report: UsageReport | null; reportedAt: number | null; error: string | null } {
-  const rpc = useRpc<typeof rpcContract>();
-  const connection = useRealtimeConnectionState();
-  const [state, setState] = useState<{ report: UsageReport | null; reportedAt: number | null }>({ report: null, reportedAt: null });
-  const [error, setError] = useState<string | null>(null);
-  const latest = useRef(0);
-  const lastConnection = useRef(connection);
-
-  const refetch = useCallback(() => {
-    const asked = ++latest.current;
-    rpc.call("usage", { threadId }).then(
-      (next) => {
-        if (asked !== latest.current) return;
-        setState(next);
-        setError(null);
-      },
-      (cause: unknown) => {
-        if (asked === latest.current) setError(errorText(cause));
-      },
-    );
-  }, [rpc, threadId]);
-
-  useEffect(() => {
-    refetch();
-  }, [refetch]);
-  useRealtime(
-    "usage",
-    useCallback(
-      (payload: unknown) => {
-        if (isSignalFor(payload, threadId)) refetch();
-      },
-      [threadId, refetch],
-    ),
-  );
-  useEffect(() => {
-    if (connection === "connected" && lastConnection.current !== "connected") refetch();
-    lastConnection.current = connection;
-  }, [connection, refetch]);
-
-  return { ...state, error };
+export interface ChipView {
+  tone: ChipTone;
+  value: string;
+  unit: string | null;
+  /** The delta, the budget (" / $10") or the age of a report that stopped coming. */
+  suffix: { kind: "delta" | "budget" | "age"; text: string } | null;
+  /** How far along the budget (at most 1), for the line under a chip near or over it. */
+  progress: number | null;
+  running: boolean;
+  stale: boolean;
+  tokenOnly: boolean;
+  label: string;
+  title: string;
 }
 
-const ago = (ms: number): string => {
-  const seconds = Math.max(0, Math.round((Date.now() - ms) / 1000));
-  if (seconds < 60) return `${seconds}s`;
-  return seconds < 3600 ? `${Math.round(seconds / 60)}m` : `${Math.round(seconds / 3600)}h`;
+const WAITING_TITLE =
+  "Waiting for pi to report. Restart this thread so pi can report: a thread started before Burn was installed reports after a restart.";
+
+/** What the chip shows for an answer; pure so every state can be tested. */
+export function chipView(answer: UsageAnswer | null, opts: { now: number; fresh: boolean; chipShows: "delta" | "cost" }): ChipView {
+  const report = answer?.report ?? null;
+  if (report === null) {
+    return {
+      tone: "waiting",
+      value: "—",
+      unit: null,
+      suffix: null,
+      progress: null,
+      running: false,
+      stale: false,
+      tokenOnly: false,
+      label: "Thread cost: waiting for pi to report. Click for details.",
+      title: WAITING_TITLE,
+    };
+  }
+  const tokenOnly = isTokenOnly(report);
+  const t = report.tokens;
+  const value = tokenOnly ? formatTokens(t.input + t.output + t.cacheRead + t.cacheWrite) : formatUsd(report.cost.total);
+  const reportedAt = answer?.reportedAt ?? opts.now;
+  const stale = report.running && opts.now - reportedAt >= STALE_MS;
+  const budget = answer?.budget?.amount ?? null;
+  const state = tokenOnly ? "none" : budgetState(report.cost.total, budget);
+  const tone: ChipTone = state === "near" || state === "over" ? state : "default";
+  const running = report.running && !stale;
+  let suffix: ChipView["suffix"] = null;
+  if (stale) suffix = { kind: "age", text: `· ${formatAgo(reportedAt, opts.now)}` };
+  else if (tone !== "default" && budget !== null) suffix = { kind: "budget", text: `/ ${formatBudget(budget)}` };
+  else if (opts.chipShows === "delta" && !tokenOnly && (running || opts.fresh)) suffix = { kind: "delta", text: formatDelta(report.lastTurnCost) };
+  const total = `${value}${tokenOnly ? " tok" : ""}`;
+  const budgetNote = budget !== null && !tokenOnly ? ` of ${formatBudget(budget)}` : "";
+  return {
+    tone,
+    value,
+    unit: tokenOnly ? "tok" : null,
+    suffix,
+    progress: tone === "default" ? null : Math.min(1, budgetFraction(report.cost.total, budget) ?? 0),
+    running,
+    stale,
+    tokenOnly,
+    label: `Thread cost ${total}${budgetNote}. Click for the breakdown.`,
+    title: stale
+      ? `Thread cost ${total}. pi has not reported for ${formatAgo(reportedAt, opts.now)} while it was working.`
+      : `Thread cost ${total}${budgetNote}${running ? ", pi is working" : ""}. Click for the breakdown.`,
+  };
+}
+
+/** "in" for a few seconds after the total changes (not on the first report), then "out" while it fades. */
+function useFreshness(total: number | null): "in" | "out" | null {
+  const [phase, setPhase] = useState<"in" | "out" | null>(null);
+  const last = useRef<number | null>(null);
+  useEffect(() => {
+    const prev = last.current;
+    last.current = total;
+    if (prev === null || total === null || total === prev) return;
+    setPhase("in");
+    const fade = setTimeout(() => setPhase("out"), FRESH_MS - FADE_MS);
+    const gone = setTimeout(() => setPhase(null), FRESH_MS);
+    return () => {
+      clearTimeout(fade);
+      clearTimeout(gone);
+    };
+  }, [total]);
+  return phase;
+}
+
+const TONES: Record<ChipTone, { chip: string; flame: string }> = {
+  default: { chip: "bg-state-hover text-foreground", flame: "text-warning" },
+  near: { chip: "bg-warning/15 text-warning-text", flame: "text-warning" },
+  over: { chip: "bg-destructive/15 text-destructive-text", flame: "text-destructive" },
+  waiting: { chip: "border-dashed border-border bg-transparent text-muted-foreground", flame: "text-muted-foreground" },
 };
 
-const since = (ms: number): string =>
-  new Date(ms).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-
-function Heading({ children }: { children: ReactNode }) {
-  return <div className="mt-2 text-[10px] font-semibold tracking-wide uppercase opacity-60">{children}</div>;
-}
-
-function Row({ label, tokens, cost }: { label: string; tokens?: string; cost: string }) {
+function ChipFace({ view, fresh, placement }: { view: ChipView; fresh: "in" | "out" | null; placement: "footer" | "header" }) {
+  const tone = TONES[view.tone];
+  const suffix = view.suffix;
   return (
-    <div className="flex items-baseline gap-2 tabular-nums">
-      <span className="min-w-0 flex-1 truncate">{label}</span>
-      {tokens ? <span className="opacity-70">{tokens}</span> : null}
-      <span className="w-14 text-right">{cost}</span>
-    </div>
-  );
-}
-
-/** The hover card; its sections follow the /burn panel in pi. */
-export function UsageCard({ report, reportedAt }: { report: UsageReport; reportedAt: number | null }): ReactNode {
-  const { cost, tokens, context } = report;
-  const costs = report.series.map((p) => p.cost);
-  const base = cost.total - costs.reduce((a, b) => a + b, 0);
-  const kinds: [string, number, number][] = [
-    ["Input (uncached)", tokens.input, cost.input],
-    ["Cache read", tokens.cacheRead, cost.cacheRead],
-    ["Cache write", tokens.cacheWrite, cost.cacheWrite],
-    ["Output", tokens.output, cost.output],
-  ];
-  return (
-    <div className="flex w-72 flex-col gap-0.5 py-0.5 text-xs" data-testid="usage-card">
-      <div className="flex items-baseline justify-between gap-3">
-        <span className="text-base font-semibold tabular-nums">{usageLabel(report)}</span>
-        <span className="opacity-70">last turn {formatDelta(report.lastTurnCost)}</span>
-      </div>
-      <div className="opacity-70">
-        {report.calls === 0 ? "No model calls yet" : `${report.calls} calls · since ${since(report.startedAt)}`}
-      </div>
-      {context ? (
-        <>
-          <Heading>Context window</Heading>
-          {context.percent != null && context.tokens != null ? (
-            <>
-              <div className="tabular-nums">
-                {formatTokens(context.tokens)} / {formatTokens(context.window)} ({context.percent.toFixed(1)}%)
-              </div>
-              <div className="h-1.5 overflow-hidden rounded-full bg-current/20">
-                <div className="h-full bg-current" style={{ width: `${Math.min(100, context.percent)}%` }} />
-              </div>
-            </>
-          ) : (
-            <div className="opacity-70">unknown until the next reply</div>
+    <>
+      <FlameIcon className={view.tokenOnly ? "text-muted-foreground" : tone.flame} />
+      <b className="font-semibold">{view.value}</b>
+      {view.unit !== null ? <span className="text-muted-foreground">{view.unit}</span> : null}
+      {suffix !== null ? (
+        <span
+          data-suffix={suffix.kind}
+          className={cn(
+            suffix.kind === "delta" ? "text-muted-foreground" : "opacity-80",
+            suffix.kind === "delta" && fresh === "in" && !view.running && "text-success animate-in fade-in-0 slide-in-from-bottom-1 duration-300",
+            suffix.kind === "delta" && fresh === "out" && !view.running && "text-success opacity-0 transition-opacity duration-500",
+            "motion-reduce:animate-none motion-reduce:transition-none",
           )}
-        </>
+        >
+          {suffix.text}
+        </span>
       ) : null}
-      <Heading>Cost by token type</Heading>
-      {kinds.map(([label, count, spent]) => (
-        <Row key={label} label={label} tokens={formatTokens(count)} cost={formatUsd(spent)} />
-      ))}
-      {report.byModel.length > 0 ? (
-        <>
-          <Heading>By model</Heading>
-          {report.byModel.map((m) => (
-            <Row key={m.key} label={m.calls > 0 ? `${m.key} · ${m.calls} calls` : m.key} cost={formatUsd(m.cost)} />
-          ))}
-        </>
+      {view.progress !== null ? (
+        <i
+          aria-hidden="true"
+          className="absolute bottom-0 left-0 h-0.5 bg-current opacity-70"
+          style={{ width: `${view.progress * 100}%` }}
+        />
       ) : null}
-      {costs.length > 0 ? (
-        <>
-          <Heading>Cumulative cost · cost per call</Heading>
-          <div className="flex gap-2">
-            <AreaChart values={cumulative(costs, base)} className="h-10 flex-1 rounded bg-current/10" />
-            <BarChart values={costs} highlight={costs.length - 1} className="h-10 flex-1 rounded bg-current/10" />
-          </div>
-        </>
-      ) : null}
-      <div className="mt-2 opacity-60">
-        {report.cacheHitPct != null ? `cache hit (session) ${report.cacheHitPct.toFixed(0)}% · ` : ""}
-        {reportedAt != null ? `Reported by pi · updated ${ago(reportedAt)} ago` : "Waiting for pi to report"}
-      </div>
-    </div>
+      {view.running ? <span aria-hidden="true" data-burn-shimmer="" data-placement={placement} className="pointer-events-none absolute inset-0" /> : null}
+    </>
   );
 }
 
-function BurnPill({ report, reportedAt, placement }: { report: UsageReport; reportedAt: number | null; placement: "footer" | "header" }) {
+function BurnChip({ threadId, answer, placement }: { threadId: string; answer: UsageAnswer | null; placement: "footer" | "header" }) {
+  const prefs = readPrefs(useSettings().values);
+  const navigate = useBbNavigate();
+  const now = useNow(30_000);
+  const fresh = useFreshness(answer?.report?.cost.total ?? null);
+  const [open, setOpen] = useState(false);
+  const view = chipView(answer, { now, fresh: fresh !== null, chipShows: prefs.chipShows });
   return (
-    <TooltipProvider delayDuration={200}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            data-placement={placement}
-            aria-label={`Thread cost ${usageLabel(report)}. Hover for the breakdown.`}
-            className={cn(
-              "inline-flex shrink-0 cursor-default items-center rounded-full bg-state-hover px-2 text-xs tabular-nums text-foreground",
-              "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-              placement === "footer" ? "h-5" : "h-6",
-            )}
-          >
-            {usageLabel(report)}
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side={placement === "footer" ? "top" : "bottom"} align="end">
-          <UsageCard report={report} reportedAt={reportedAt} />
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          data-burn-chip-button=""
+          data-placement={placement}
+          data-tone={view.tone}
+          data-running={view.running ? "" : undefined}
+          aria-label={view.label}
+          title={view.title}
+          className={cn(
+            "relative inline-flex shrink-0 cursor-pointer items-center gap-1 overflow-hidden rounded-full border border-transparent pr-2 pl-1.5 text-xs whitespace-nowrap tabular-nums",
+            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:ring-1 data-[state=open]:ring-ring",
+            placement === "footer" ? "h-5" : "h-6",
+            TONES[view.tone].chip,
+            view.stale && "opacity-60",
+          )}
+        >
+          <ChipFace view={view} fresh={fresh} placement={placement} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent side={placement === "footer" ? "top" : "bottom"} align="end" className="w-[340px] p-0" aria-label="Burn: what this thread cost">
+        <BurnCard
+          answer={answer}
+          threadId={threadId}
+          defaultBudget={prefs.threadBudget}
+          now={now}
+          onOpenDetails={() => {
+            setOpen(false);
+            openPanelIn(navigate, null);
+          }}
+          onCopy={() => {
+            const report = answer?.report;
+            if (report) void copySummary(report, answer.title, answer.budget);
+          }}
+        />
+      </PopoverContent>
+    </Popover>
   );
 }
 
 /**
- * A thread header action, which bb always mounts, unlike a prompt-box action. It shows the pill beside
+ * A thread header action, which bb always mounts, unlike a prompt-box action. It shows the chip beside
  * the context circle under the prompt box, or here in the header when that row is not on screen.
  */
 export function BurnHeaderAction({ threadId }: PluginThreadHeaderActionProps): ReactNode {
-  const { values } = useSettings();
-  const { report, reportedAt } = useUsage(threadId);
-  const visible = values?.chip !== false;
+  const prefs = readPrefs(useSettings().values);
+  const navigate = useBbNavigate();
+  const { answer } = useUsage(threadId);
   const [anchor, setAnchor] = useState<HTMLSpanElement | null>(null);
-  const mount = useFooterMount(visible ? anchor : null);
-  const pill = visible ? <BurnPill report={report ?? EMPTY_REPORT} reportedAt={reportedAt} placement={mount === null ? "header" : "footer"} /> : null;
+  const mount = useFooterMount(prefs.chip ? anchor : null);
+  useEffect(() => registerPanelOpener(threadId, (params) => openPanelIn(navigate, params)), [threadId, navigate]);
+  const chip = prefs.chip ? <BurnChip threadId={threadId} answer={answer} placement={mount === null ? "header" : "footer"} /> : null;
   return (
-    <span ref={setAnchor} className={visible && mount === null ? "inline-flex items-center" : "hidden"}>
-      {pill !== null && mount !== null ? createPortal(pill, mount) : pill}
+    <span ref={setAnchor} className={prefs.chip && mount === null ? "inline-flex items-center" : "hidden"}>
+      {chip !== null && mount !== null ? createPortal(chip, mount) : chip}
     </span>
   );
 }

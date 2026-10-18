@@ -20,6 +20,14 @@ describe("usageReportSchema", () => {
     expect(usageReportSchema.safeParse({ ...base, byModel }).success).toBe(false);
   });
 
+  it("upgrades a version 1 report from an older extension", () => {
+    const { turnCount, turns, days, running, budget, stoppedAt, ...rest } = sampleReport();
+    const v1 = { ...rest, version: 1, series: rest.series.map(({ turn, ...p }) => p) };
+    const parsed = usageReportSchema.parse(v1);
+    expect(parsed).toMatchObject({ version: 2, turnCount: 0, turns: [], days: [], running: false, budget: null, stoppedAt: null });
+    expect(parsed.series.every((p) => p.turn === 0)).toBe(true);
+  });
+
   it("drops unknown fields", () => {
     const parsed = usageReportSchema.parse({ ...sampleReport(), extra: 1 });
     expect("extra" in parsed).toBe(false);

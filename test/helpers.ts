@@ -1,4 +1,4 @@
-import type { UsageReport } from "../src/report.js";
+import type { TurnRow, UsageReport } from "../src/report.js";
 
 type CostIn = Partial<{ input: number; output: number; cacheRead: number; cacheWrite: number }>;
 
@@ -15,12 +15,18 @@ export function usage(total: number, tokens: CostIn = {}) {
 let tick = 0;
 const stamp = () => new Date(Date.UTC(2026, 9, 18, 12, 0, tick++)).toISOString();
 
-export const user = () => ({ type: "message", timestamp: stamp(), message: { role: "user" } });
+export const user = (content: unknown = "do the thing") => ({ type: "message", timestamp: stamp(), message: { role: "user", content } });
 
-export const assistant = (total: number, model = "m1", tokens: CostIn = {}, provider = "p") => ({
+export const assistant = (total: number, model = "m1", tokens: CostIn = {}, provider = "p", tools: string[] = []) => ({
   type: "message",
   timestamp: stamp(),
-  message: { role: "assistant", provider, model, usage: usage(total, tokens) },
+  message: {
+    role: "assistant",
+    provider,
+    model,
+    usage: usage(total, tokens),
+    content: tools.map((name, i) => ({ type: "toolCall", id: `t${i}`, name, arguments: {} })),
+  },
 });
 
 export const toolResult = (total: number) => ({
@@ -43,9 +49,22 @@ export const compaction = (total: number) => ({
   usage: usage(total),
 });
 
+const turnRow = (n: number, minute: number, prompt: string, callCosts: number[], tools: [string, number][] = []): TurnRow => ({
+  n,
+  at: Date.UTC(2026, 9, 18, 12, minute, 0),
+  endAt: Date.UTC(2026, 9, 18, 12, minute + 2, 0),
+  prompt,
+  calls: callCosts.length,
+  cost: callCosts.reduce((a, b) => a + b, 0),
+  tokens: { input: 1000, output: 500, cacheRead: 20_000, cacheWrite: 2000 },
+  callCosts,
+  tools: tools.map(([name, count]) => ({ name, count })),
+  models: ["p/claude-opus"],
+});
+
 export function sampleReport(over: Partial<UsageReport> = {}): UsageReport {
   return {
-    version: 1,
+    version: 2,
     startedAt: Date.UTC(2026, 9, 18, 12, 0, 0),
     updatedAt: Date.UTC(2026, 9, 18, 13, 12, 0),
     calls: 23,
@@ -59,10 +78,21 @@ export function sampleReport(over: Partial<UsageReport> = {}): UsageReport {
       { key: "p/claude-haiku", cost: 0.51, tokens: 236_000, calls: 5 },
     ],
     series: [
-      { at: Date.UTC(2026, 9, 18, 12, 1, 0), cost: 0.1, tokens: 1000 },
-      { at: Date.UTC(2026, 9, 18, 12, 2, 0), cost: 0.62, tokens: 9000 },
-      { at: Date.UTC(2026, 9, 18, 12, 3, 0), cost: 0.31, tokens: 5000 },
+      { at: Date.UTC(2026, 9, 18, 12, 1, 0), cost: 0.1, tokens: 1000, turn: 1 },
+      { at: Date.UTC(2026, 9, 18, 12, 2, 0), cost: 0.62, tokens: 9000, turn: 2 },
+      { at: Date.UTC(2026, 9, 18, 12, 3, 0), cost: 0.31, tokens: 5000, turn: 3 },
     ],
+    turnCount: 4,
+    turns: [
+      turnRow(1, 1, "read the README and tell me what burn does", [0.1, 0.3], [["read", 2]]),
+      turnRow(2, 10, "refactor the parser to return Result and update every caller", [0.62, 1.4, 0.9], [["bash", 6], ["edit", 5]]),
+      turnRow(3, 30, "/review", [0.31, 0.2]),
+      turnRow(4, 50, "now add tests for the empty-input case", [0.29, 0.02], [["edit", 1]]),
+    ],
+    days: [{ day: "2026-10-18", cost: 4.82, calls: 23, models: [{ key: "p/claude-opus", cost: 4.31 }, { key: "p/claude-haiku", cost: 0.51 }] }],
+    running: false,
+    budget: null,
+    stoppedAt: null,
     ...over,
   };
 }

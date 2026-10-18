@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildReport } from "../src/report.js";
+import { buildReport, dayKey, type EntryLike, promptExcerpt, TURNS_MAX } from "../src/report.js";
 import { assistant, compaction, toolResult, usageEntry, user } from "./helpers.js";
 
 describe("buildReport", () => {
@@ -33,7 +33,7 @@ describe("buildReport", () => {
   });
 
   it("groups by provider/model, folds the tail into Other and keeps rows summing to the total", () => {
-    const entries = [user()];
+    const entries: EntryLike[] = [user()];
     for (let i = 1; i <= 9; i++) entries.push(assistant(i, `m${i}`));
     entries.push(toolResult(0.5));
     const r = buildReport(entries, undefined);
@@ -53,7 +53,7 @@ describe("buildReport", () => {
   });
 
   it("caps the series at the last 60 calls", () => {
-    const entries = [user()];
+    const entries: EntryLike[] = [user()];
     for (let i = 0; i < 70; i++) entries.push(assistant(1));
     const r = buildReport(entries, undefined);
     expect(r.series).toHaveLength(60);
@@ -71,5 +71,79 @@ describe("buildReport", () => {
   it("passes the context through", () => {
     const context = { tokens: 10, window: 100, percent: 10 };
     expect(buildReport([], context).context).toEqual(context);
+  });
+
+  it("splits calls into turns at each user message", () => {
+    const r = buildReport(
+      [
+        user("read the README"),
+        assistant(0.1, "m1", {}, "p", ["read", "read"]),
+        toolResult(0.05),
+        assistant(0.2, "m1", {}, "p", ["bash"]),
+        user([{ type: "text", text: "now\n  fix   it" }, { type: "image" }]),
+        assistant(0.5, "m2"),
+      ],
+      undefined,
+    );
+    expect(r.turnCount).toBe(2);
+    expect(r.turns.map((t) => [t.n, t.prompt, t.calls])).toEqual([
+      [1, "read the README", 2],
+      [2, "now fix it", 1],
+    ]);
+    expect(r.turns[0]?.cost).toBeCloseTo(0.35);
+    expect(r.turns[0]?.callCosts).toEqual([0.1, 0.2]);
+    expect(r.turns[0]?.tools).toEqual([
+      { name: "read", count: 2 },
+      { name: "bash", count: 1 },
+    ]);
+    expect(r.turns[1]?.models).toEqual(["p/m2"]);
+    expect(r.series.map((p) => p.turn)).toEqual([1, 1, 2]);
+    expect(r.lastTurnCost).toBeCloseTo(0.5);
+  });
+
+  it("keeps usage before the first prompt in turn 0", () => {
+    const r = buildReport([usageEntry(1), user(), assistant(2)], undefined);
+    expect(r.turns.map((t) => t.n)).toEqual([0, 1]);
+    expect(r.turnCount).toBe(1);
+  });
+
+  it("keeps a prompt with no calls as an empty turn", () => {
+    const r = buildReport([user("hi"), user("again"), assistant(1)], undefined);
+    expect(r.turns.map((t) => t.calls)).toEqual([0, 1]);
+  });
+
+  it("caps the turns at the last TURNS_MAX and counts them all", () => {
+    const entries: EntryLike[] = [];
+    for (let i = 0; i < TURNS_MAX + 5; i++) entries.push(user(`p${i}`), assistant(1));
+    const r = buildReport(entries, undefined);
+    expect(r.turns).toHaveLength(TURNS_MAX);
+    expect(r.turnCount).toBe(TURNS_MAX + 5);
+    expect(r.turns.at(-1)?.n).toBe(TURNS_MAX + 5);
+  });
+
+  it("totals spend per local day with its top models", () => {
+    const a = assistant(1, "m1");
+    const b = assistant(2, "m2");
+    b.timestamp = new Date(Date.parse(a.timestamp) + 86_400_000).toISOString();
+    const r = buildReport([user(), a, b], undefined);
+    expect(r.days.map((d) => [d.day, d.cost, d.calls])).toEqual([
+      [dayKey(Date.parse(a.timestamp)), 1, 1],
+      [dayKey(Date.parse(b.timestamp)), 2, 1],
+    ]);
+    expect(r.days[1]?.models).toEqual([{ key: "p/m2", cost: 2 }]);
+  });
+
+  it("starts as a v2 report that is not running and has no budget", () => {
+    expect(buildReport([], undefined)).toMatchObject({ version: 2, running: false, budget: null, stoppedAt: null, turns: [], days: [] });
+  });
+});
+
+describe("promptExcerpt", () => {
+  it("joins text blocks, collapses whitespace and trims to 120 characters", () => {
+    expect(promptExcerpt([{ type: "text", text: " a\n b " }, { type: "text", text: "c" }])).toBe("a b c");
+    expect(promptExcerpt(undefined)).toBe("");
+    const long = promptExcerpt("x".repeat(300));
+    expect(long).toHaveLength(120);
+    expect(long.endsWith("…")).toBe(true);
   });
 });

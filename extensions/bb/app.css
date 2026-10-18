@@ -1,0 +1,41 @@
+/* Motion for the chip while pi works. Attribute selectors only: this file is not scoped to the plugin like its utilities. */
+@keyframes burn-flicker {
+  from {
+    transform: scale(0.85) rotate(-6deg);
+    opacity: 0.75;
+  }
+  to {
+    transform: scale(1.1) rotate(4deg);
+    opacity: 1;
+  }
+}
+
+@keyframes burn-shimmer {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes burn-pulse {
+  50% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 25%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-burn-chip-button][data-running] [data-burn-flame] {
+    animation: burn-flicker 0.9s ease-in-out infinite alternate;
+  }
+
+  [data-burn-shimmer] {
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, currentColor 16%, transparent), transparent);
+    animation: burn-shimmer 1.8s linear infinite;
+  }
+
+  [data-burn-running-dot] {
+    animation: burn-pulse 1.6s ease-in-out infinite;
+  }
+}
