@@ -3,9 +3,8 @@ import { type ReactNode, useState } from "react";
 import { formatBudget, formatClock, formatDuration, formatTokens, formatUsd, isTokenOnly, modelName, turnMultiple, usageLabel } from "../../src/format.js";
 import type { TurnRow, UsageReport } from "../../src/report.js";
 import { BudgetEditor } from "./budget-editor.js";
-import { BudgetStatus, Label, Models, StoppedNotice, WaitingNotice, WhereItWent } from "./card.js";
+import { BudgetStatus, CopyAction, Label, Models, StoppedNotice, WaitingNotice, WhereItWent } from "./card.js";
 import { MiniBars } from "./charts.js";
-import { Button } from "./components/ui/button.js";
 import type { Family, UsageAnswer } from "./contract.js";
 import { cn } from "./lib/utils.js";
 import { readPrefs } from "./prefs.js";
@@ -279,7 +278,7 @@ export function BurnPanel({ threadId, params }: PluginThreadPanelProps): ReactNo
       {report !== null ? <Models report={report} /> : null}
       {report !== null ? (
         <div>
-          <Button onClick={() => void copySummary(report, answer.title, budget)}>Copy cost summary</Button>
+          <CopyAction onCopy={() => copySummary(report, answer.title, budget)} />
         </div>
       ) : null}
     </div>

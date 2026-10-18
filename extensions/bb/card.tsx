@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from "react";
+import { type ComponentPropsWithoutRef, type ReactNode, useEffect, useState } from "react";
 import { budgetFraction, budgetState } from "../../src/budget.js";
 import { formatAgo, formatBudget, formatClock, formatDelta, formatDuration, formatUsd, isTokenOnly, modelName, usageLabel } from "../../src/format.js";
 import type { UsageReport } from "../../src/report.js";
@@ -7,7 +7,7 @@ import { budgetWords, type EffectiveBudget } from "./budgets.js";
 import { CallChart, callPoints, Meter, StackedBar } from "./charts.js";
 import { Button } from "./components/ui/button.js";
 import type { UsageAnswer } from "./contract.js";
-import { FlameIcon } from "./icon.js";
+import { CheckIcon, CopyIcon, FlameIcon, GaugeIcon, PanelIcon } from "./icon.js";
 import { cn } from "./lib/utils.js";
 
 export function Label({ children, aside }: { children: ReactNode; aside?: ReactNode }): ReactNode {
@@ -129,18 +129,65 @@ const meta = (report: UsageReport): string =>
     ? "No model calls yet"
     : `${report.calls} calls · ${report.turnCount} prompts · ${formatDuration(report.updatedAt - report.startedAt)}`;
 
+/** A quiet toolbar button: an icon and a short label in small muted text. */
+export function ActionButton({ icon, children, className, ...props }: ComponentPropsWithoutRef<"button"> & { icon: ReactNode }): ReactNode {
+  return (
+    <button
+      type="button"
+      className={cn(
+        "inline-flex h-8 min-w-0 items-center justify-center gap-1.5 px-2 text-[11px] font-medium whitespace-nowrap text-muted-foreground transition-colors",
+        "hover:bg-state-hover hover:text-foreground focus-visible:bg-state-hover focus-visible:text-foreground focus-visible:outline-none",
+        "aria-expanded:bg-state-hover aria-expanded:text-foreground",
+        className,
+      )}
+      {...props}
+    >
+      {icon}
+      <span className="truncate">{children}</span>
+    </button>
+  );
+}
+
+const COPIED_MS = 1500;
+
+/** Swaps to "Copied" with a check for a moment after a copy that worked. */
+export function useCopied(): [boolean, (copy: () => Promise<boolean>) => void] {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), COPIED_MS);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  return [copied, (copy) => void copy().then((ok) => setCopied(ok))];
+}
+
+/** The copy action on its own, as the Burn tab shows it. */
+export function CopyAction({ onCopy }: { onCopy: () => Promise<boolean> }): ReactNode {
+  const [copied, copy] = useCopied();
+  return (
+    <ActionButton
+      className="h-7 rounded-md border border-border"
+      icon={copied ? <CheckIcon className="text-success" /> : <CopyIcon />}
+      onClick={() => copy(onCopy)}
+    >
+      {copied ? "Copied" : "Copy cost summary"}
+    </ActionButton>
+  );
+}
+
 export interface BurnCardProps {
   answer: UsageAnswer | null;
   threadId: string;
   defaultBudget: number | null;
   now: number;
   onOpenDetails: () => void;
-  onCopy: () => void;
+  onCopy: () => Promise<boolean>;
 }
 
 /** The chip's popover: what the thread cost, against its budget, where it went and on which models. */
 export function BurnCard({ answer, threadId, defaultBudget, now, onOpenDetails, onCopy }: BurnCardProps): ReactNode {
   const [editing, setEditing] = useState(false);
+  const [copied, copy] = useCopied();
   const report = answer?.report ?? null;
   const budget = answer?.budget ?? null;
   const editor = editing ? (
@@ -156,7 +203,7 @@ export function BurnCard({ answer, threadId, defaultBudget, now, onOpenDetails, 
           <FlameIcon className="text-warning" />
           Burn
         </span>
-        <span>{answer?.reportedAt != null ? `updated ${formatAgo(answer.reportedAt, now)} ago` : "not reported yet"}</span>
+        <span title="Reported by pi">{answer?.reportedAt != null ? `updated ${formatAgo(answer.reportedAt, now)} ago` : "not reported yet"}</span>
       </div>
       {report === null ? (
         <div className="px-3 py-2.5">
@@ -201,15 +248,22 @@ export function BurnCard({ answer, threadId, defaultBudget, now, onOpenDetails, 
         </>
       )}
       {report === null ? editor : null}
-      <div className="flex flex-wrap items-center gap-2 border-t border-border bg-foreground/3 px-3 py-2.5">
-        <Button variant="primary" onClick={onOpenDetails}>
+      <div
+        role="toolbar"
+        aria-label="Burn actions"
+        className={cn("grid divide-x divide-border border-t border-border", report !== null ? "grid-cols-3" : "grid-cols-2")}
+      >
+        <ActionButton icon={<PanelIcon />} onClick={onOpenDetails}>
           Open details
-        </Button>
-        <Button onClick={() => setEditing((on) => !on)} aria-expanded={editing}>
+        </ActionButton>
+        <ActionButton icon={<GaugeIcon />} onClick={() => setEditing((on) => !on)} aria-expanded={editing}>
           Set budget…
-        </Button>
-        {report !== null ? <Button onClick={onCopy}>Copy summary</Button> : null}
-        <span className="ml-auto text-[11px] text-muted-foreground">Reported by pi</span>
+        </ActionButton>
+        {report !== null ? (
+          <ActionButton icon={copied ? <CheckIcon className="text-success" /> : <CopyIcon />} onClick={() => copy(onCopy)}>
+            {copied ? "Copied" : "Copy summary"}
+          </ActionButton>
+        ) : null}
       </div>
     </div>
   );

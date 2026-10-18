@@ -196,7 +196,6 @@ describe("the chip's popover", () => {
       "Open details",
       "Set budget…",
       "Copy summary",
-      "Reported by pi",
     ]) {
       expect(text).toContain(part);
     }
@@ -260,8 +259,15 @@ describe("the chip's popover", () => {
   it("opens the Burn tab and copies the summary", async () => {
     const slot = await renderChip(backend());
     let card = await openCard(slot);
+    const actions = card.getByRole("toolbar", { name: "Burn actions" });
+    expect([...actions.querySelectorAll("button")].map((b) => [b.textContent, b.querySelector("svg") !== null])).toEqual([
+      ["Open details", true],
+      ["Set budget…", true],
+      ["Copy summary", true],
+    ]);
     fireEvent.click(card.getByRole("button", { name: "Copy summary" }));
     await vi.waitFor(() => expect(toast.success).toHaveBeenCalledWith("Copied the cost summary"));
+    await vi.waitFor(() => expect(card.getByRole("button", { name: "Copied" })).toBeTruthy());
     expect(slot.inspection.experimental_clipboardWrites[0]?.text).toContain("### Cost of “burn UX polish”");
 
     fireEvent.click(card.getByRole("button", { name: "Open details" }));

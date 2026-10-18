@@ -185,10 +185,7 @@ function BurnChip({ threadId, answer, placement }: { threadId: string; answer: U
             setOpen(false);
             openPanelIn(navigate, null);
           }}
-          onCopy={() => {
-            const report = answer?.report;
-            if (report) void copySummary(report, answer.title, answer.budget);
-          }}
+          onCopy={async () => (answer?.report ? copySummary(answer.report, answer.title, answer.budget) : false)}
         />
       </PopoverContent>
     </Popover>

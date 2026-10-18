@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { formatClock, formatUsd } from "../../src/format.js";
 import type { UsageReport } from "../../src/report.js";
 import { cn } from "./lib/utils.js";
@@ -40,6 +40,12 @@ export function callPoints(report: UsageReport): CallPoint[] {
 export const callTip = (p: CallPoint): string =>
   `Turn ${p.turn} · call ${p.call}/${p.calls} · ${formatUsd(p.cost)} · total ${formatUsd(p.total)}`;
 
+/** Where the hover label starts: centred on its bar, but never past either edge of the chart. */
+export function tipLeft(index: number, count: number, chartWidth: number, tipWidth: number): number {
+  const centre = ((index + 0.5) / count) * chartWidth;
+  return Math.max(0, Math.min(centre - tipWidth / 2, chartWidth - tipWidth));
+}
+
 const W = 316;
 const H = 86;
 const P = 4;
@@ -50,6 +56,13 @@ const P = 4;
  */
 export function CallChart({ points, className }: { points: CallPoint[]; className?: string }): ReactNode {
   const [hover, setHover] = useState<number | null>(null);
+  const box = useRef<HTMLDivElement>(null);
+  const tip = useRef<HTMLDivElement>(null);
+  // Measured before paint: a label centred on an edge bar would overflow the popover and give it a horizontal scrollbar.
+  useLayoutEffect(() => {
+    if (hover === null || box.current === null || tip.current === null) return;
+    tip.current.style.left = `${tipLeft(hover, points.length, box.current.clientWidth, tip.current.offsetWidth)}px`;
+  }, [hover, points.length]);
   if (points.length === 0) return null;
   const slot = (W - 2 * P) / points.length;
   const bar = Math.max(1, slot * 0.66);
@@ -72,7 +85,7 @@ export function CallChart({ points, className }: { points: CallPoint[]; classNam
     .join(" ");
   const hovered = hover === null ? undefined : points[hover];
   return (
-    <div className={cn("relative", className)}>
+    <div ref={box} className={cn("relative", className)}>
       <svg
         viewBox={`0 0 ${W} ${H}`}
         preserveAspectRatio="none"
@@ -119,9 +132,9 @@ export function CallChart({ points, className }: { points: CallPoint[]; classNam
       </svg>
       {hovered !== undefined && hover !== null ? (
         <div
+          ref={tip}
           role="status"
-          className="pointer-events-none absolute top-0 -translate-x-1/2 -translate-y-full rounded-md bg-foreground px-1.5 py-1 text-[11px] whitespace-nowrap text-background tabular-nums"
-          style={{ left: `${((hover + 0.5) / points.length) * 100}%` }}
+          className="pointer-events-none absolute top-0 left-0 -translate-y-full rounded-md bg-foreground px-1.5 py-1 text-[11px] whitespace-nowrap text-background tabular-nums"
         >
           {callTip(hovered)}
         </div>

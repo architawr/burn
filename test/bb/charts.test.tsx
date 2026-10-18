@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { CallChart, callPoints, callTip, MiniBars, StackedBar } from "../../extensions/bb/charts.js";
+import { CallChart, callPoints, callTip, MiniBars, StackedBar, tipLeft } from "../../extensions/bb/charts.js";
 import { sampleReport } from "../helpers.js";
 
 afterEach(cleanup);
@@ -25,6 +25,15 @@ describe("callPoints", () => {
       turns: [{ ...sampleReport().turns[0]!, n: 6, calls: 6 }],
     });
     expect(callPoints(report).map((p) => `${p.turn}:${p.call}/${p.calls}`)).toEqual(["6:5/6", "6:6/6", "7:1/1"]);
+  });
+});
+
+describe("tipLeft", () => {
+  it("centres the label on its bar and keeps it inside the chart", () => {
+    expect(tipLeft(4, 10, 300, 100)).toBe(85);
+    expect(tipLeft(0, 10, 300, 100)).toBe(0);
+    expect(tipLeft(9, 10, 300, 100)).toBe(200);
+    expect(tipLeft(5, 10, 80, 100)).toBe(0);
   });
 });
 
