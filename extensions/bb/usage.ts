@@ -24,9 +24,13 @@ export function useOnReconnect(onChange: () => void): void {
   }, [connection, onChange]);
 }
 
+/** How often a figure read from a session log is refreshed: no signal says when such a thread spends. */
+export const LOG_REFRESH_MS = 60_000;
+
 /**
  * The thread's usage, refetched on its own `usage` signal (and its children's
- * when `withChildren`) and after a reconnect.
+ * when `withChildren`), after a reconnect, and every LOG_REFRESH_MS while
+ * it comes from a session log.
  */
 export function useUsage(
   threadId: string,
@@ -69,6 +73,12 @@ export function useUsage(
     ),
   );
   useOnReconnect(refetch);
+  const fromLog = answer?.source === "log";
+  useEffect(() => {
+    if (!fromLog) return;
+    const timer = setInterval(refetch, LOG_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [fromLog, refetch]);
   return { answer, error, refetch };
 }
 

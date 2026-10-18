@@ -32,6 +32,8 @@ const familySchema = z.object({
 
 const usageOutput = z.object({
   report: usageReportSchema.nullable(),
+  /** "pi": the thread's pi reported it; "log": read from its session log because it never reported. */
+  source: z.enum(["pi", "log"]).nullable(),
   reportedAt: z.number().nullable(),
   title: z.string().nullable(),
   budget: effectiveBudgetSchema.nullable(),

@@ -6,7 +6,7 @@ import type { BurnAlert } from "../alerts.js";
 import { REPORT_PREFIX } from "../keys.js";
 import { type Stored, storedSchema } from "../schema.js";
 import type { SpendOutput, SpendRange } from "./contract.js";
-import { localDays, RANGE_DAYS } from "./days.js";
+import { dayDate, localDays, RANGE_DAYS } from "./days.js";
 
 export interface SpendDeps {
   bb: BbPluginApi;
@@ -14,6 +14,12 @@ export interface SpendDeps {
   budgetOf(threadId: string, report: UsageReport): Promise<number | null>;
   /** The Daily budget setting, or null when unset. */
   dailyBudget(): Promise<number | null>;
+  /**
+   * Every thread's report that may have spend since `since`. server.ts adds
+   * threads that never reported, read from their session logs; without it,
+   * only the reports stored in KV count.
+   */
+  reports?(since: number): Promise<Entry[]>;
   now?: () => number;
 }
 
@@ -21,6 +27,7 @@ export const DAILY_ALERT_PREFIX = "daily-alert:";
 export const dailyAlertKey = (day: string): string => `${DAILY_ALERT_PREFIX}${day}`;
 
 const META_TTL_MS = 60_000;
+const DAY_MS = 86_400_000;
 const TOP_THREADS = 10;
 const CHART_MODELS = 4;
 /** `experimental_listDescendants` takes 1–200 ids per call. */
@@ -35,7 +42,7 @@ interface ThreadMeta {
   childCount: number;
 }
 
-interface Entry {
+export interface Entry {
   threadId: string;
   report: UsageReport;
 }
@@ -172,7 +179,9 @@ export function createSpendHandlers(deps: SpendDeps): {
       const inRange: ReadonlySet<string> = new Set(dayList);
       const before = new Set(localDays(today, length, length));
 
-      const entries = await readReports(bb);
+      // A day of slack: the range and the period before it, whatever daylight saving does.
+      const since = dayDate(dayList[0] as string).getTime() - (length + 1) * DAY_MS;
+      const entries = deps.reports ? await deps.reports(since) : await readReports(bb);
       const [metas, names, dailyBudget] = await Promise.all([
         threadMeta(entries.map((e) => e.threadId)),
         entries.length > 0 ? projectNames() : new Map<string, string>(),
@@ -321,6 +330,17 @@ async function todaySpend(bb: BbPluginApi, today: string): Promise<{ cost: numbe
   return { cost, threads };
 }
 
+function todayFrom(entries: Entry[], today: string): { cost: number; threads: number } {
+  let cost = 0;
+  let threads = 0;
+  for (const { report } of entries) {
+    const spent = report.days.find((d) => d.day === today)?.cost ?? 0;
+    if (spent > 0) threads++;
+    cost += spent;
+  }
+  return { cost, threads };
+}
+
 async function checkOnce(deps: SpendDeps): Promise<BurnAlert | null> {
   const budget = await deps.dailyBudget();
   if (budget === null || !(budget > 0)) return null;
@@ -328,7 +348,7 @@ async function checkOnce(deps: SpendDeps): Promise<BurnAlert | null> {
   const today = dayKey(at);
   const key = dailyAlertKey(today);
   if ((await deps.bb.storage.kv.get(key)) !== undefined) return null;
-  const { cost, threads } = await todaySpend(deps.bb, today);
+  const { cost, threads } = deps.reports ? todayFrom(await deps.reports(dayDate(today).getTime() - DAY_MS), today) : await todaySpend(deps.bb, today);
   if (cost < budget) return null;
   await deps.bb.storage.kv.set(key, { at });
   return {

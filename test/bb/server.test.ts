@@ -1,11 +1,15 @@
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BurnAlert } from "../../extensions/bb/alerts.js";
+import { sessionPath } from "../../extensions/bb/logs.js";
 import plugin, { SETTINGS } from "../../extensions/bb/server.js";
 import * as spendServer from "../../extensions/bb/spend/server.js";
 import type { UsageReport } from "../../src/report.js";
-import { buildReport } from "../../src/report.js";
-import { assistant, sampleReport, user } from "../helpers.js";
+import { buildReport, dayKey } from "../../src/report.js";
+import { assistant, sampleReport, toolResult, user } from "../helpers.js";
 
 const THREAD = "thr_aaaaaaaa";
 const CHILD = "thr_cccccccc";
@@ -16,14 +20,43 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-type Options = { settings?: Record<string, number | boolean | string>; descendants?: Record<string, string[]>; titles?: Record<string, string> };
+type Options = {
+  settings?: Record<string, number | boolean | string>;
+  descendants?: Record<string, string[]>;
+  titles?: Record<string, string>;
+  /** Session log entries per thread, written where bb's pi bridge keeps them. */
+  logs?: Record<string, unknown[]>;
+  /** What `threads.list` returns. */
+  listed?: { id: string; providerId: string; updatedAt: number; deletedAt: number | null }[];
+};
+
+const LOG_MTIME = 1_700_000_000_000;
+
+function writeLogs(logs: Record<string, unknown[]>): string {
+  const dataDir = mkdtempSync(join(tmpdir(), "burn-server-"));
+  disposers.push(() => rmSync(dataDir, { recursive: true, force: true }));
+  mkdirSync(join(dataDir, "pi-bridge-sessions"));
+  for (const [threadId, entries] of Object.entries(logs)) {
+    const path = sessionPath(dataDir, `pi_${threadId}`);
+    writeFileSync(path, entries.map((e) => JSON.stringify(e)).join("\n"));
+    utimesSync(path, LOG_MTIME / 1000, LOG_MTIME / 1000);
+  }
+  return dataDir;
+}
 
 async function setup(opts: Options = {}) {
+  const logs = opts.logs ?? {};
   const { bb, harness } = createFakePluginHost({
     pluginId: "pi-burn",
     settings: opts.settings,
+    dataDir: writeLogs(logs),
     sdk: {
       threads: {
+        list: async () => opts.listed ?? [],
+        events: {
+          list: async ({ threadId }: { threadId: string }) =>
+            threadId in logs ? [{ type: "thread/identity", threadId, seq: 1, data: { providerThreadId: `pi_${threadId}` } }] : [],
+        },
         get: async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, title: opts.titles?.[threadId] ?? null }),
         experimental_listDescendants: async ({ threadIds }: { threadIds: readonly string[] }) => ({
           threads: threadIds.map((threadId) => ({ threadId, descendantIds: opts.descendants?.[threadId] ?? [] })),
@@ -317,6 +350,49 @@ describe("costs, overBudget and family", () => {
     await s.post(envelope(1, costOf(30), GRANDCHILD));
     await s.rpc("setBudget", { threadId: GRANDCHILD, budget: null });
     expect(await s.rpc("overBudget", {})).toEqual({ threads: [{ threadId: THREAD, cost: 12.4, budget: 10 }] });
+  });
+
+  it("reads the session log of a thread or child that never reported", async () => {
+    const s = await setup({
+      descendants: { [THREAD]: [CHILD, GRANDCHILD] },
+      titles: { [GRANDCHILD]: "Kevin" },
+      logs: { [THREAD]: [user("hi"), assistant(1.5)], [GRANDCHILD]: [user("build it"), assistant(2), toolResult(0.5), assistant(3)] },
+    });
+    await s.post(envelope(1, { ...costOf(1.1), calls: 14 }, CHILD));
+    const got = await s.usage();
+    expect(got).toMatchObject({ source: "log", reportedAt: LOG_MTIME });
+    expect(got.report.cost.total).toBeCloseTo(1.5);
+    expect(got.family.total).toBeCloseTo(1.5 + 1.1 + 5.5);
+    expect(got.family.children.map((c: { title: string }) => c.title)).toEqual(["Kevin", "Untitled thread"]);
+    const { threads } = await s.rpc<{ threads: { familyCost: number }[] }>("costs", { threadIds: [THREAD] });
+    expect(threads[0]?.familyCost).toBeCloseTo(8.1);
+    expect((await s.usage(CHILD)).source).toBe("pi");
+  });
+
+  it("counts pi threads that never reported on the Burn page, and skips other providers and deleted threads", async () => {
+    const today = (entry: { timestamp: string }) => ({ ...entry, timestamp: new Date().toISOString() });
+    const s = await setup({
+      logs: { [CHILD]: [today(user("hi")), today(assistant(3))], [GRANDCHILD]: [today(user()), today(assistant(5))] },
+      listed: [
+        { id: CHILD, providerId: "pi", updatedAt: Date.now(), deletedAt: null },
+        { id: GRANDCHILD, providerId: "pi", updatedAt: Date.now(), deletedAt: Date.now() },
+        { id: "thr_eeeeeeee", providerId: "codex", updatedAt: Date.now(), deletedAt: null },
+      ],
+    });
+    s.harness.sdk.stub("projects.list", async () => []);
+    await s.post(envelope(1, { ...costOf(2), days: [{ day: dayKey(Date.now()), cost: 2, calls: 1, models: [] }] }));
+    const spend = await s.rpc<{ total: number; threadCount: number }>("spend", { range: "today", projectId: null });
+    expect(spend.threadCount).toBe(2);
+    expect(spend.total).toBeCloseTo(5);
+  });
+
+  it("prefers the log over a report from Burn 0.1, which has no prompts or days", async () => {
+    const s = await setup({ logs: { [THREAD]: [user("hi"), assistant(2)] } });
+    const { turnCount, turns, days, running, budget, stoppedAt, ...rest } = sampleReport(costOf(9));
+    await s.post({ threadId: THREAD, sentAt: 1, report: { ...rest, version: 1, series: [] } });
+    const got = await s.usage();
+    expect(got.source).toBe("log");
+    expect(got.report.cost.total).toBeCloseTo(2);
   });
 
   it("still answers when bb cannot list child threads", async () => {

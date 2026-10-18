@@ -56,6 +56,11 @@ describe("chipView", () => {
     expect(waiting.title).toContain("Restart this thread so pi can report");
   });
 
+  it("says when the figure comes from pi's session log", () => {
+    expect(view(answer({ source: "log" })).title).toContain("read from pi's session log");
+    expect(view(answer()).title).not.toContain("session log");
+  });
+
   it("shows the growing delta while pi works", () => {
     expect(view(answer({ report: sampleReport({ running: true }), reportedAt: now - 1000 }))).toMatchObject({
       running: true,
@@ -202,6 +207,22 @@ describe("the chip's popover", () => {
     expect(text).not.toMatch(/saved|per hour|\/ ?hour/);
     fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
     await vi.waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
+  });
+
+  it("adds the child threads' cost, and says when the figures come from a session log", async () => {
+    const family = {
+      total: 49.97,
+      calls: 581,
+      children: [
+        { threadId: "thr_cccccccc", title: "Kevin", cost: 8.92, calls: 105, running: false, model: null },
+        { threadId: "thr_dddddddd", title: "Pedro", cost: 14.11, calls: 172, running: false, model: null },
+      ],
+    };
+    const slot = await renderChip(backend(() => answer({ source: "log", family })));
+    const card = await openCard(slot);
+    expect(card.getByTestId("with-children").textContent).toBe("$49.97 with 2 child threads");
+    const header = card.getByTitle(/does not report to Burn/);
+    expect(header.textContent).toMatch(/^from pi's log · \d+s ago$/);
   });
 
   it("explains the wait when pi has not reported", async () => {

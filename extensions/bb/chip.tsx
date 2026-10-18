@@ -83,7 +83,9 @@ export function chipView(answer: UsageAnswer | null, opts: { now: number; fresh:
     label: `Thread cost ${total}${budgetNote}. Click for the breakdown.`,
     title: stale
       ? `Thread cost ${total}. pi has not reported for ${formatAgo(reportedAt, opts.now)} while it was working.`
-      : `Thread cost ${total}${budgetNote}${running ? ", pi is working" : ""}. Click for the breakdown.`,
+      : answer?.source === "log"
+        ? `Thread cost ${total}${budgetNote}, read from pi's session log because this thread does not report to Burn. Restart it for live updates and budgets.`
+        : `Thread cost ${total}${budgetNote}${running ? ", pi is working" : ""}. Click for the breakdown.`,
   };
 }
 

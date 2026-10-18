@@ -10,6 +10,7 @@ export const QUIET = { budget: null, stopAtBudget: false, notifyExpensiveTurn: f
 export function answer(over: Partial<UsageAnswer> = {}): UsageAnswer {
   return {
     report: sampleReport(),
+    source: "pi",
     reportedAt: Date.now() - 12_000,
     title: "burn UX polish",
     budget: null,

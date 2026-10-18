@@ -8,6 +8,7 @@ import { ALERT_CHANNEL } from "./alerts.js";
 import { effectiveBudget, type OwnBudget, policyFor, positiveOrNull } from "./budgets.js";
 import { BUDGET_MAX, type CostRow, type Family, rpcContract } from "./contract.js";
 import { budgetKey, REPORT_PREFIX, reportKey } from "./keys.js";
+import { createLogReports } from "./logs.js";
 import { alertEvents, alertFor } from "./notify.js";
 import { type Stored, storedSchema, usageEnvelopeSchema } from "./schema.js";
 import { checkDailyBudget, createSpendHandlers, type SpendDeps } from "./spend/server.js";
@@ -97,11 +98,27 @@ function remember<V>(map: Map<string, V>, key: string, value: V, max = MAX_THREA
 
 const topModel = (report: UsageReport): string | null => report.byModel[0]?.key ?? null;
 
+/** A thread's report and where it came from: its pi, or its session log. `at` is when it last changed. */
+interface Resolved {
+  report: UsageReport;
+  source: "pi" | "log";
+  at: number;
+}
+
+/** Burn 0.1 sent no prompts or days; the schema upgrades such a report with none. */
+const fromBurn01 = (report: UsageReport): boolean => report.turnCount === 0 && report.calls > 0;
+
+const THREAD_PAGE = 200;
+const THREAD_PAGES_MAX = 50;
+const THREAD_LIST_TTL_MS = 60_000;
+
 export default async function plugin(bb: BbPluginApi): Promise<void> {
   const settings = bb.settings.define(SETTINGS);
   const reports = new Map<string, Stored>();
   const budgets = new Map<string, OwnBudget>();
   const titles = new Map<string, { title: string | null; at: number }>();
+  const logs = createLogReports(bb);
+  let piThreads: { at: number; threads: { id: string; updatedAt: number }[] } | null = null;
 
   async function load(threadId: string): Promise<Stored | null> {
     const held = reports.get(threadId);
@@ -113,7 +130,51 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
       await bb.storage.kv.delete(reportKey(threadId));
       return null;
     }
+    remember(reports, threadId, parsed.data);
     return parsed.data;
+  }
+
+  /**
+   * The thread's own report when its pi reports to Burn, else one read from its
+   * session log: threads started before Burn was installed, and their children,
+   * never report but still cost money.
+   */
+  async function resolve(threadId: string): Promise<Resolved | null> {
+    const stored = await load(threadId);
+    if (stored && !fromBurn01(stored.report)) return { report: stored.report, source: "pi", at: stored.at };
+    const log = await logs.reportOf(threadId);
+    if (log) return { report: log.report, source: "log", at: log.at };
+    return stored ? { report: stored.report, source: "pi", at: stored.at } : null;
+  }
+
+  /** Every pi thread bb knows, archived and hidden ones included, listed at most once a minute. */
+  async function listPiThreads(): Promise<{ id: string; updatedAt: number }[]> {
+    if (piThreads && Date.now() - piThreads.at < THREAD_LIST_TTL_MS) return piThreads.threads;
+    const found: { id: string; updatedAt: number }[] = [];
+    for (let page = 0; page < THREAD_PAGES_MAX; page++) {
+      const rows = await bb.sdk.threads.list({ includeHidden: true, limit: THREAD_PAGE, offset: page * THREAD_PAGE });
+      for (const t of rows) if (t.providerId === "pi" && t.deletedAt === null) found.push({ id: t.id, updatedAt: t.updatedAt });
+      if (rows.length < THREAD_PAGE) break;
+    }
+    piThreads = { at: Date.now(), threads: found };
+    return found;
+  }
+
+  /** Reports of every thread that reported, and of every pi thread active since `since` that did not. */
+  async function threadReports(since: number): Promise<{ threadId: string; report: UsageReport }[]> {
+    const ids = new Set((await bb.storage.kv.list(REPORT_PREFIX)).map((key) => key.slice(REPORT_PREFIX.length)));
+    try {
+      for (const t of await listPiThreads()) if (t.updatedAt >= since) ids.add(t.id);
+    } catch (err) {
+      bb.log.warn(`listing pi threads failed, so only reporting threads count: ${message(err)}`);
+    }
+    const out: { threadId: string; report: UsageReport }[] = [];
+    // One at a time: a log can be megabytes, and parsing many at once would hold up the server.
+    for (const threadId of ids) {
+      const got = await resolve(threadId);
+      if (got) out.push({ threadId, report: got.report });
+    }
+    return out;
   }
 
   async function ownBudget(threadId: string): Promise<OwnBudget> {
@@ -165,15 +226,22 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
     }
   }
 
+  async function childReports(descendantIds: readonly string[]): Promise<{ id: string; report: UsageReport }[]> {
+    const out: { id: string; report: UsageReport }[] = [];
+    for (const id of descendantIds) {
+      const got = await resolve(id);
+      if (got) out.push({ id, report: got.report });
+    }
+    return out;
+  }
+
   async function familyOf(report: UsageReport | null, descendantIds: readonly string[]): Promise<Family> {
-    const reported = (await Promise.all(descendantIds.map(async (id) => ({ id, stored: await load(id) })))).filter(
-      (c): c is { id: string; stored: Stored } => c.stored !== null,
-    );
-    const total = reported.reduce((sum, c) => sum + c.stored.report.cost.total, report?.cost.total ?? 0);
-    const calls = reported.reduce((sum, c) => sum + c.stored.report.calls, report?.calls ?? 0);
-    const costliest = reported.sort((a, b) => b.stored.report.cost.total - a.stored.report.cost.total).slice(0, CHILDREN_MAX);
+    const reported = await childReports(descendantIds);
+    const total = reported.reduce((sum, c) => sum + c.report.cost.total, report?.cost.total ?? 0);
+    const calls = reported.reduce((sum, c) => sum + c.report.calls, report?.calls ?? 0);
+    const costliest = reported.sort((a, b) => b.report.cost.total - a.report.cost.total).slice(0, CHILDREN_MAX);
     const children = await Promise.all(
-      costliest.map(async ({ id, stored: { report: r } }) => ({
+      costliest.map(async ({ id, report: r }) => ({
         threadId: id,
         title: (await titleOf(id)) ?? UNTITLED,
         cost: r.cost.total,
@@ -186,15 +254,15 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
   }
 
   async function costRow(threadId: string, descendantIds: readonly string[], values: Values): Promise<CostRow> {
-    const report = (await load(threadId))?.report ?? null;
+    const report = (await resolve(threadId))?.report ?? null;
     const budget = await budgetOf(threadId, report, values);
-    const children = (await Promise.all(descendantIds.map(load))).filter((s): s is Stored => s !== null);
+    const children = await childReports(descendantIds);
     const cost = report?.cost.total ?? 0;
     return {
       threadId,
       cost: report ? cost : null,
       label: report ? usageLabel(report) : null,
-      familyCost: children.length > 0 ? children.reduce((sum, s) => sum + s.report.cost.total, cost) : null,
+      familyCost: children.length > 0 ? children.reduce((sum, c) => sum + c.report.cost.total, cost) : null,
       budget,
       state: budgetState(cost, budget?.amount),
     };
@@ -204,6 +272,7 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
     bb,
     budgetOf: async (threadId, report) => (await budgetOf(threadId, report))?.amount ?? null,
     dailyBudget: async () => positiveOrNull((await settings.get()).dailyBudget),
+    reports: threadReports,
   };
 
   /** Publishes the toasts a newly stored report earns. Runs after the reply, so a slow title lookup never delays pi. */
@@ -221,8 +290,8 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
 
   bb.rpc.register(rpcContract, {
     usage: async ({ threadId }) => {
-      const stored = await load(threadId);
-      const report = stored?.report ?? null;
+      const resolved = await resolve(threadId);
+      const report = resolved?.report ?? null;
       const descendants = await descendantsOf([threadId]);
       const [budget, policy, title, family] = await Promise.all([
         budgetOf(threadId, report),
@@ -230,14 +299,14 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
         titleOf(threadId),
         familyOf(report, descendants.get(threadId) ?? []),
       ]);
-      return { report, reportedAt: stored?.at ?? null, title, budget, policy, family };
+      return { report, source: resolved?.source ?? null, reportedAt: resolved?.at ?? null, title, budget, policy, family };
     },
     setBudget: async ({ threadId, budget }) => {
       if (budget === "default") await bb.storage.kv.delete(budgetKey(threadId));
       else await bb.storage.kv.set(budgetKey(threadId), { budget });
       remember(budgets, threadId, budget === "default" ? undefined : budget);
       bb.realtime.publish("usage", { threadId });
-      const report = (await load(threadId))?.report ?? null;
+      const report = (await resolve(threadId))?.report ?? null;
       return { budget: await budgetOf(threadId, report), policy: await policyOf(threadId) };
     },
     costs: async ({ threadIds }) => {
@@ -302,6 +371,7 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
   bb.events.on("thread.deleted", async ({ thread }) => {
     reports.delete(thread.id);
     budgets.delete(thread.id);
+    logs.forget(thread.id);
     titles.delete(thread.id);
     try {
       await Promise.all([bb.storage.kv.delete(reportKey(thread.id)), bb.storage.kv.delete(budgetKey(thread.id))]);

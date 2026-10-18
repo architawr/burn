@@ -30,17 +30,19 @@ pi install "$PWD"
 bb plugin install path:"$PWD"
 ```
 
-Do not install the bb plugin from npm: the npm package ships only the pi extension, and bb needs the whole repository to build the plugin. Update with `pi update` and `bb plugin update pi-burn`.
+Do not install the bb plugin from npm: the npm package ships only the pi extension, and bb needs the whole repository to build the plugin. Update with `pi update git:github.com/kalindudc/burn` and `bb plugin update pi-burn`. A bare `pi update` updates pi itself, not its packages.
 
 Requirements: bb 0.46 or newer, and a pi that provides `ctx.mode` (1.x).
 
-After installing, start a new pi thread in bb. bb gives pi the address to report to only when it starts a pi session, so a thread that was already running reports after it restarts. Until a thread reports, its chip shows a dashed "—".
+After installing, start a new pi thread in bb. bb gives pi the address to report to only when it starts a pi session, so a thread that was already running reports after it restarts. Until then, Burn reads that thread's cost from its pi session log (see below).
 
 ## How the halves connect
 
 bb ignores a pi extension's footer status, so in a bb thread the pi extension sends its numbers to the plugin. The plugin gives pi an address through the `BURN_BB_URL` environment variable, and pi posts a small JSON report when a run starts, after each model call, and when the run ends. Only bb's own pi reports (RPC mode); a `pi -p` started from a thread's shell does not. The plugin keeps the latest report per thread, including across restarts, and ignores a report older than the one it holds.
 
 The plugin's reply carries the thread's budget policy, so pi in a bb thread follows bb's budget settings. A thread budget set in bb takes precedence over one set with `/burn budget`.
+
+A thread that never reports still has a cost: threads started before Burn was installed, and child threads such as minions that they started. For those, the plugin reads the thread's pi session log, the file bb's pi bridge keeps for it, and builds the same report pi would. The card then says "from pi's log", the figure refreshes every minute, and budgets warn and stop only once the thread restarts and reports. These totals match bb's thread-spend plugin.
 
 ## Usage in pi
 
@@ -68,7 +70,7 @@ Outside the terminal UI, `/burn` prints the same figures as text. Sessions that 
 
 ## Usage in bb
 
-- Click the chip for the breakdown. From the card you can open the Burn tab in the side panel, set a budget for the thread, or copy a summary.
+- The chip shows this thread's own cost, as pi's footer does. Click it for the breakdown, including the total with its child threads. From the card you can open the Burn tab in the side panel, set a budget for the thread, or copy a summary.
 - Every thread menu has a **Cost** entry with the thread's cost, including its children, and the same actions.
 - Threads over their budget get a red flame in the sidebar.
 - The **Burn** page in bb's navigation shows spend for today, the last 7 days or the last 30 days, optionally for one project.
@@ -88,7 +90,8 @@ Settings, in Burn's plugin settings:
 
 ## Troubleshooting
 
-- **Chip shows a dashed "—" in bb:** the thread has not reported. Check that it runs on pi and was started after Burn was installed. The card says "Waiting for pi to report" until a report arrives.
+- **Chip shows a dashed "—" in bb:** the thread has not reported and Burn found no session log for it. Check that it runs on pi. A thread on another machine keeps its log there (see Limits).
+- **Card says "from pi's log":** the thread does not report to Burn, usually because it started before Burn was installed. Restart it for live updates and budgets.
 - **Chip is dimmed with an age such as "3h":** pi said it was working but has not reported since. The thread's pi process may have stopped.
 - **No chip in bb:** check that the **Cost chip** setting in Burn's plugin settings is on. `bb plugin list` should show `pi-burn` as running.
 - **Chip is in the thread header, not the footer:** bb's footer markup was not found (see Limits). The chip works the same there.
@@ -98,7 +101,7 @@ Settings, in Burn's plugin settings:
 
 - bb's footer has no plugin slot. The chip is a thread header action that moves itself next to the context circle by using bb's page markup (`[data-follow-up-composer-footer]`). If bb changes that markup the chip stays in the thread header.
 - The sidebar flag uses an experimental bb API; on a bb without it, the flag does not show.
-- The Burn page counts the spend of threads that reported to the plugin, by the days on which pi made the calls.
+- The Burn page counts the spend of every pi thread, by the days on which pi made the calls. Session logs are read only on the machine that runs bb, so a thread that runs on another host counts only once it reports.
 - pi orders status entries by key, so where the pill sits next to other markers is up to pi.
 - Providers other than pi (Claude Code, Codex) are not supported yet.
 

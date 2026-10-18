@@ -124,6 +124,23 @@ export function Models({ report }: { report: UsageReport }): ReactNode {
   );
 }
 
+/** "$49.97 with 3 child threads", when any child thread has cost something. */
+export function familyLine(answer: UsageAnswer): string | null {
+  const { family, report } = answer;
+  const count = family.children.length;
+  if (count === 0 || report === null || family.total <= report.cost.total) return null;
+  return `${formatUsd(family.total)} with ${count} child ${count === 1 ? "thread" : "threads"}`;
+}
+
+const LOG_NOTE =
+  "This thread does not report to Burn, so Burn read its pi session log. Restart the thread for live updates and budgets.";
+
+function updatedText(answer: UsageAnswer | null, now: number): { text: string; title: string } {
+  if (answer?.reportedAt == null) return { text: "not reported yet", title: "Reported by pi" };
+  const ago = formatAgo(answer.reportedAt, now);
+  return answer.source === "log" ? { text: `from pi's log · ${ago} ago`, title: LOG_NOTE } : { text: `updated ${ago} ago`, title: "Reported by pi" };
+}
+
 const meta = (report: UsageReport): string =>
   report.calls === 0
     ? "No model calls yet"
@@ -196,6 +213,8 @@ export function BurnCard({ answer, threadId, defaultBudget, now, onOpenDetails, 
     </div>
   ) : null;
   const points = report ? callPoints(report) : [];
+  const updated = updatedText(answer, now);
+  const withChildren = answer ? familyLine(answer) : null;
   return (
     <div className="flex w-[340px] max-w-full flex-col text-xs" data-testid="burn-card">
       <div className="flex items-center justify-between px-3 pt-2.5 text-[11.5px] text-muted-foreground">
@@ -203,7 +222,7 @@ export function BurnCard({ answer, threadId, defaultBudget, now, onOpenDetails, 
           <FlameIcon className="text-warning" />
           Burn
         </span>
-        <span title="Reported by pi">{answer?.reportedAt != null ? `updated ${formatAgo(answer.reportedAt, now)} ago` : "not reported yet"}</span>
+        <span title={updated.title}>{updated.text}</span>
       </div>
       {report === null ? (
         <div className="px-3 py-2.5">
@@ -221,6 +240,11 @@ export function BurnCard({ answer, threadId, defaultBudget, now, onOpenDetails, 
               ) : null}
             </div>
             <div className="mt-1 text-muted-foreground tabular-nums">{meta(report)}</div>
+            {withChildren !== null ? (
+              <div className="text-muted-foreground tabular-nums" data-testid="with-children">
+                {withChildren}
+              </div>
+            ) : null}
             {isTokenOnly(report) ? null : <BudgetStatus cost={report.cost.total} budget={budget} onSet={() => setEditing(true)} />}
             {report.stoppedAt !== null ? (
               <div className="mt-2">
