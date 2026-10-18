@@ -218,7 +218,8 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
 
   async function descendantsOf(threadIds: readonly string[]): Promise<Map<string, string[]>> {
     try {
-      const { threads } = await bb.sdk.threads.experimental_listDescendants({ threadIds });
+      // Archived and hidden children still cost money, and thread-spend counts them too.
+      const { threads } = await bb.sdk.threads.experimental_listDescendants({ threadIds, includeArchived: true, includeHidden: true });
       return new Map(threads.map((t) => [t.threadId, t.descendantIds]));
     } catch (err) {
       bb.log.warn(`listing the child threads of ${threadIds.length} thread(s) failed: ${message(err)}`);

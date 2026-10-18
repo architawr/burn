@@ -395,6 +395,12 @@ describe("costs, overBudget and family", () => {
     expect(got.report.cost.total).toBeCloseTo(2);
   });
 
+  it("counts archived and hidden child threads", async () => {
+    const s = await setup();
+    await s.usage();
+    expect(s.harness.sdk.callsTo("threads.experimental_listDescendants")[0]?.[0]).toMatchObject({ includeArchived: true, includeHidden: true });
+  });
+
   it("still answers when bb cannot list child threads", async () => {
     const { bb, harness } = createFakePluginHost({ pluginId: "pi-burn" });
     await plugin(bb);
