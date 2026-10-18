@@ -90,6 +90,7 @@ export function sampleReport(over: Partial<UsageReport> = {}): UsageReport {
       turnRow(4, 50, "now add tests for the empty-input case", [0.29, 0.02], [["edit", 1]]),
     ],
     days: [{ day: "2026-10-18", cost: 4.82, calls: 23, models: [{ key: "p/claude-opus", cost: 4.31 }, { key: "p/claude-haiku", cost: 0.51 }] }],
+    utcDays: [{ day: "2026-10-18", cost: 4.82, calls: 23, models: [{ key: "p/claude-opus", cost: 4.31 }, { key: "p/claude-haiku", cost: 0.51 }] }],
     running: false,
     budget: null,
     stoppedAt: null,

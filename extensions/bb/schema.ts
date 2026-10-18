@@ -67,6 +67,8 @@ const v2Schema = z.object({
   turnCount: count,
   turns: z.array(turnSchema).max(TURNS_MAX),
   days: z.array(daySchema).max(DAYS_MAX),
+  // Burn 0.2 extensions send no UTC days.
+  utcDays: z.array(daySchema).max(DAYS_MAX).default([]),
   running: z.boolean(),
   budget: z.number().finite().positive().nullable(),
   stoppedAt: amount.nullable(),
@@ -86,6 +88,7 @@ export const usageReportSchema: z.ZodType<UsageReport, unknown> = z.union([
       turnCount: 0,
       turns: [],
       days: [],
+      utcDays: [],
       running: false,
       budget: null,
       stoppedAt: null,

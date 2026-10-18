@@ -5,3 +5,9 @@ export const reportKey = (threadId: string): string => `${REPORT_PREFIX}${thread
 /** A thread's own budget, overriding the Thread budget setting: `{ budget: number | null }`, null meaning none. */
 export const BUDGET_PREFIX = "budget:";
 export const budgetKey = (threadId: string): string => `${BUDGET_PREFIX}${threadId}`;
+
+/** The last report a host read from a thread's pi session logs, for when that host is offline: `{ report, at }`. */
+export const logKey = (threadId: string): string => `log:${threadId}`;
+
+/** When Burn last stopped a thread at its budget through bb: `{ at }`. */
+export const stoppedKey = (threadId: string): string => `stopped:${threadId}`;

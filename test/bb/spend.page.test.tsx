@@ -2,13 +2,14 @@
 import { type RenderedSlot, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { act, fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import type { SpendOutput, SpendRange, spendMethods } from "../../extensions/bb/spend/contract.js";
+import type { SpendOutput, SpendRange, SpendZone, spendMethods } from "../../extensions/bb/spend/contract.js";
 import { localDays } from "../../extensions/bb/spend/days.js";
 import { REFETCH_DEBOUNCE_MS, SpendPage } from "../../extensions/bb/spend/page.js";
 
 const slots: RenderedSlot[] = [];
 afterEach(() => {
   for (const slot of slots.splice(0)) slot.lifecycle.unmount();
+  localStorage.clear();
 });
 
 const NOW = new Date(2026, 9, 18, 15).getTime();
@@ -25,6 +26,7 @@ function output(range: SpendRange = "7d", over: Partial<SpendOutput> = {}): Spen
   }));
   return {
     range,
+    tz: "local",
     days,
     total: 97.4,
     previousTotal: 82.54,
@@ -89,12 +91,14 @@ function output(range: SpendRange = "7d", over: Partial<SpendOutput> = {}): Spen
   };
 }
 
-function backend(answer: (input: { range: SpendRange; projectId: string | null }) => SpendOutput | Promise<SpendOutput>) {
-  const inputs: { range: SpendRange; projectId: string | null }[] = [];
+type Input = { range: SpendRange; projectId: string | null; tz?: SpendZone };
+
+function backend(answer: (input: Input) => SpendOutput | Promise<SpendOutput>) {
+  const inputs: Input[] = [];
   return {
     inputs,
     rpc: {
-      spend: (input: { range: SpendRange; projectId: string | null }) => {
+      spend: (input: Input) => {
         inputs.push(input);
         return answer(input);
       },
@@ -166,18 +170,39 @@ describe("Spend page", () => {
     expect(slot.getByText("Last 30 days")).toBeTruthy();
 
     fireEvent.change(slot.getByRole("combobox", { name: "Project" }), { target: { value: "proj_c" } });
-    await waitFor(() => expect(server.inputs.at(-1)).toEqual({ range: "30d", projectId: "proj_c" }));
+    await waitFor(() => expect(server.inputs.at(-1)).toEqual({ range: "30d", projectId: "proj_c", tz: "local" }));
 
     fireEvent.click(slot.getByRole("button", { name: "Today" }));
     expect(await slot.findByRole("img", { name: "Today by model: $97.40" })).toBeTruthy();
-    expect(server.inputs.at(-1)).toEqual({ range: "today", projectId: "proj_c" });
-    expect(server.inputs[0]).toEqual({ range: "7d", projectId: null });
+    expect(server.inputs.at(-1)).toEqual({ range: "today", projectId: "proj_c", tz: "local" });
+    expect(server.inputs[0]).toEqual({ range: "7d", projectId: null, tz: "local" });
   });
 
   it("starts on the range named in the panel path", async () => {
     const server = backend((input) => output(input.range));
     render(server, "30d");
-    await waitFor(() => expect(server.inputs[0]).toEqual({ range: "30d", projectId: null }));
+    await waitFor(() => expect(server.inputs[0]).toEqual({ range: "30d", projectId: null, tz: "local" }));
+  });
+
+  it("switches between local and UTC days, remembers the choice and labels the figures", async () => {
+    const server = backend((input) => output(input.range, { tz: input.tz ?? "local" }));
+    const slot = render(server);
+    await slot.findByText("$97.40");
+    const group = within(slot.getByRole("group", { name: "Days" }));
+    expect(group.getByRole("button", { name: "Local" }).getAttribute("aria-pressed")).toBe("true");
+    expect(slot.queryByText(/\(UTC\)/)).toBeNull();
+
+    fireEvent.click(group.getByRole("button", { name: "UTC" }));
+    await waitFor(() => expect(server.inputs.at(-1)).toEqual({ range: "7d", projectId: null, tz: "utc" }));
+    expect(await slot.findByText("Spent (UTC)")).toBeTruthy();
+    expect(slot.getByText("Per day (UTC)")).toBeTruthy();
+    expect(group.getByRole("button", { name: "UTC" }).getAttribute("aria-pressed")).toBe("true");
+    expect(localStorage.getItem("burn.spend.tz")).toBe("utc");
+
+    slot.lifecycle.unmount();
+    const again = backend((input) => output(input.range, { tz: input.tz ?? "local" }));
+    render(again);
+    await waitFor(() => expect(again.inputs[0]).toEqual({ range: "7d", projectId: null, tz: "utc" }));
   });
 
   it("shows the empty state when no thread has reported", async () => {

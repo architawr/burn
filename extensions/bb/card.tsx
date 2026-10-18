@@ -24,8 +24,7 @@ export function WaitingNotice(): ReactNode {
     <div className="flex flex-col gap-1 text-xs" data-testid="waiting">
       <div className="font-semibold">Waiting for pi to report</div>
       <p className="text-muted-foreground">
-        Burn shows a thread's cost once its pi session reports it, after the first prompt. A thread started before Burn was installed
-        reports after it restarts, and only pi threads report.
+        Burn shows a thread's cost once pi has written its session log, after the first prompt. Only pi threads have one.
       </p>
     </div>
   );
@@ -132,14 +131,8 @@ export function familyLine(answer: UsageAnswer): string | null {
   return `${formatUsd(family.total)} with ${count} child ${count === 1 ? "thread" : "threads"}`;
 }
 
-const LOG_NOTE =
-  "This thread does not report to Burn, so Burn read its pi session log. Restart the thread for live updates and budgets.";
-
-function updatedText(answer: UsageAnswer | null, now: number): { text: string; title: string } {
-  if (answer?.reportedAt == null) return { text: "not reported yet", title: "Reported by pi" };
-  const ago = formatAgo(answer.reportedAt, now);
-  return answer.source === "log" ? { text: `from pi's log · ${ago} ago`, title: LOG_NOTE } : { text: `updated ${ago} ago`, title: "Reported by pi" };
-}
+const updatedText = (answer: UsageAnswer | null, now: number): string =>
+  answer?.reportedAt == null ? "not reported yet" : `updated ${formatAgo(answer.reportedAt, now)} ago`;
 
 const meta = (report: UsageReport): string =>
   report.calls === 0
@@ -222,7 +215,7 @@ export function BurnCard({ answer, threadId, defaultBudget, now, onOpenDetails, 
           <FlameIcon className="text-warning" />
           Burn
         </span>
-        <span title={updated.title}>{updated.text}</span>
+        <span>{updated}</span>
       </div>
       {report === null ? (
         <div className="px-3 py-2.5">

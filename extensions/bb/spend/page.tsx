@@ -9,7 +9,7 @@ import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, use
 import { budgetState } from "../../../src/budget.js";
 import { formatBudget, formatUsd, modelName, providerName } from "../../../src/format.js";
 import { cn } from "../lib/utils.js";
-import type { SpendOutput, SpendRange, spendMethods } from "./contract.js";
+import type { SpendOutput, SpendRange, SpendZone, spendMethods } from "./contract.js";
 import { dayDate, RANGE_DAYS } from "./days.js";
 
 /** A usage signal arrives per report from every running thread, so refetches wait for a quiet moment. */
@@ -21,6 +21,31 @@ const RANGES: { range: SpendRange; label: string; column: string; previous: stri
   { range: "30d", label: "30 days", column: "Last 30 days", previous: "previous 30 days" },
 ];
 const rangeInfo = (range: SpendRange) => RANGES.find((r) => r.range === range) ?? (RANGES[1] as (typeof RANGES)[number]);
+
+const ZONES: { zone: SpendZone; label: string }[] = [
+  { zone: "local", label: "Local" },
+  { zone: "utc", label: "UTC" },
+];
+const ZONE_KEY = "burn.spend.tz";
+
+function savedZone(): SpendZone {
+  try {
+    return localStorage.getItem(ZONE_KEY) === "utc" ? "utc" : "local";
+  } catch {
+    // Storage is blocked in some sandboxed frames; local days are the default anyway.
+    return "local";
+  }
+}
+
+function saveZone(zone: SpendZone): void {
+  try {
+    localStorage.setItem(ZONE_KEY, zone);
+  } catch (cause) {
+    console.warn(`Burn: remembering the ${zone} day choice failed: ${errorText(cause)}`);
+  }
+}
+
+const zoneSuffix = (zone: SpendZone): string => (zone === "utc" ? " (UTC)" : "");
 
 /** bb's categorical chart series, each falling back to a host token where a theme does not define it. */
 const CHART = [
@@ -45,8 +70,8 @@ interface SpendState {
   loading: boolean;
 }
 
-/** Spend for the range and project, refetched (debounced) on every usage signal and after a reconnect. */
-function useSpend(range: SpendRange, projectId: string | null): SpendState & { retry: () => void } {
+/** Spend for the range, project and days, refetched (debounced) on every usage signal and after a reconnect. */
+function useSpend(range: SpendRange, projectId: string | null, tz: SpendZone): SpendState & { retry: () => void } {
   const rpc = useRpc<typeof spendMethods>();
   const connection = useRealtimeConnectionState();
   const [state, setState] = useState<SpendState>({ data: null, error: null, loading: true });
@@ -57,7 +82,7 @@ function useSpend(range: SpendRange, projectId: string | null): SpendState & { r
   const refetch = useCallback(() => {
     const asked = ++latest.current;
     setState((s) => ({ ...s, loading: true }));
-    rpc.call("spend", { range, projectId }).then(
+    rpc.call("spend", { range, projectId, tz }).then(
       (data) => {
         if (asked === latest.current) setState({ data, error: null, loading: false });
       },
@@ -65,7 +90,7 @@ function useSpend(range: SpendRange, projectId: string | null): SpendState & { r
         if (asked === latest.current) setState((s) => ({ ...s, error: errorText(cause), loading: false }));
       },
     );
-  }, [rpc, range, projectId]);
+  }, [rpc, range, projectId, tz]);
 
   useEffect(() => {
     refetch();
@@ -103,15 +128,50 @@ function Label({ children, aside }: { children: ReactNode; aside?: ReactNode }) 
   );
 }
 
+function Segments<T extends string>({
+  label,
+  items,
+  value,
+  onChange,
+}: {
+  label: string;
+  items: { value: T; label: string }[];
+  value: T;
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div role="group" aria-label={label} className="inline-flex rounded-md bg-surface-recessed p-0.5 text-xs">
+      {items.map((item) => (
+        <button
+          key={item.value}
+          type="button"
+          aria-pressed={item.value === value}
+          onClick={() => onChange(item.value)}
+          className={cn(
+            "rounded-[5px] px-2.5 py-1 text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            item.value === value ? "bg-accent text-accent-foreground" : "hover:text-foreground",
+          )}
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function Toolbar({
   range,
   onRange,
+  zone,
+  onZone,
   projectId,
   onProject,
   options,
 }: {
   range: SpendRange;
   onRange: (range: SpendRange) => void;
+  zone: SpendZone;
+  onZone: (zone: SpendZone) => void;
   projectId: string | null;
   onProject: (projectId: string | null) => void;
   options: SpendOutput["projectOptions"];
@@ -131,22 +191,8 @@ function Toolbar({
           </option>
         ))}
       </select>
-      <div role="group" aria-label="Range" className="inline-flex rounded-md bg-surface-recessed p-0.5 text-xs">
-        {RANGES.map((r) => (
-          <button
-            key={r.range}
-            type="button"
-            aria-pressed={r.range === range}
-            onClick={() => onRange(r.range)}
-            className={cn(
-              "rounded-[5px] px-2.5 py-1 text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-              r.range === range ? "bg-accent text-accent-foreground" : "hover:text-foreground",
-            )}
-          >
-            {r.label}
-          </button>
-        ))}
-      </div>
+      <Segments label="Days" items={ZONES.map((z) => ({ value: z.zone, label: z.label }))} value={zone} onChange={onZone} />
+      <Segments label="Range" items={RANGES.map((r) => ({ value: r.range, label: r.label }))} value={range} onChange={onRange} />
     </div>
   );
 }
@@ -179,7 +225,7 @@ function Change({ total, previous, range }: { total: number; previous: number; r
 function Kpis({ data }: { data: SpendOutput }) {
   return (
     <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
-      <Kpi label="Spent" value={formatUsd(data.total)} sub={<Change total={data.total} previous={data.previousTotal} range={data.range} />} />
+      <Kpi label={`Spent${zoneSuffix(data.tz)}`} value={formatUsd(data.total)} sub={<Change total={data.total} previous={data.previousTotal} range={data.range} />} />
       <Kpi
         label="Threads"
         value={String(data.threadCount)}
@@ -463,7 +509,10 @@ function Dashboard({ data }: { data: SpendOutput }) {
     <>
       <Kpis data={data} />
       <section aria-label={data.range === "today" ? "Today" : "Per day"}>
-        <Label aside={data.models.length > 0 ? <Legend models={data.models} /> : null}>{data.range === "today" ? "Today" : "Per day"}</Label>
+        <Label aside={data.models.length > 0 ? <Legend models={data.models} /> : null}>
+          {data.range === "today" ? "Today" : "Per day"}
+          {zoneSuffix(data.tz)}
+        </Label>
         {data.range === "today" ? <TodayBar data={data} /> : <DayChart data={data} />}
       </section>
       <ThreadTable data={data} />
@@ -501,7 +550,12 @@ export function SpendPage({ subPath }: PluginNavPanelProps): ReactNode {
     Object.hasOwn(RANGE_DAYS, subPath) ? (subPath as SpendRange) : "7d",
   );
   const [projectId, setProjectId] = useState<string | null>(null);
-  const { data, error, loading, retry } = useSpend(range, projectId);
+  const [zone, setZone] = useState<SpendZone>(savedZone);
+  const chooseZone = useCallback((next: SpendZone) => {
+    setZone(next);
+    saveZone(next);
+  }, []);
+  const { data, error, loading, retry } = useSpend(range, projectId, zone);
 
   let body: ReactNode;
   if (data === null) {
@@ -533,7 +587,15 @@ export function SpendPage({ subPath }: PluginNavPanelProps): ReactNode {
   return (
     <div className="h-full overflow-y-auto p-4 md:p-5">
       <div className={cn("mx-auto w-full max-w-4xl space-y-5 text-foreground", loading && data !== null && "opacity-70")} aria-busy={loading}>
-        <Toolbar range={range} onRange={setRange} projectId={projectId} onProject={setProjectId} options={data?.projectOptions ?? []} />
+        <Toolbar
+          range={range}
+          onRange={setRange}
+          zone={zone}
+          onZone={chooseZone}
+          projectId={projectId}
+          onProject={setProjectId}
+          options={data?.projectOptions ?? []}
+        />
         {body}
       </div>
     </div>

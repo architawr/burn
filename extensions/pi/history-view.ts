@@ -20,6 +20,8 @@ export interface HistorySource {
 
 export interface HistoryState {
   range: number;
+  /** Count UTC calendar days, as Shopify's AI proxy does, instead of local ones. */
+  utc: boolean;
   /** The selected session's path; null selects the first. */
   selected: string | null;
   top: number;
@@ -43,9 +45,9 @@ function historySessions(source: HistorySource, report: UsageReport): SessionSum
   return [summarise(currentPath, title, report), ...loaded.filter((s) => s.path !== currentPath)];
 }
 
-export function historyTotals(source: HistorySource, report: UsageReport, range: number): RangeTotals {
+export function historyTotals(source: HistorySource, report: UsageReport, range: number, utc = false): RangeTotals {
   const r = RANGES[range] ?? RANGES[0];
-  return rangeTotals(historySessions(source, report), r.days, r.chartDays, source.now);
+  return rangeTotals(historySessions(source, report), r.days, r.chartDays, source.now, utc);
 }
 
 export function historyIndex(totals: RangeTotals, selected: string | null): number {
@@ -53,7 +55,7 @@ export function historyIndex(totals: RangeTotals, selected: string | null): numb
   return index === -1 ? 0 : index;
 }
 
-function chartLines(input: ViewInput, totals: RangeTotals, now: number): string[] {
+function chartLines(input: ViewInput, totals: RangeTotals, now: number, utc: boolean): string[] {
   const { theme } = input;
   const width = input.width - 4;
   const days = totals.chart;
@@ -62,7 +64,7 @@ function chartLines(input: ViewInput, totals: RangeTotals, now: number): string[
   const cell = days.length <= 7 ? Math.max(1, slot - 3) : Math.max(1, slot - 1);
   const gap = slot - cell;
   const peak = Math.max(0, ...days.map((d) => d.cost));
-  const today = dayKey(now);
+  const today = dayKey(now, utc ? "UTC" : undefined);
   const rows = blockChart(
     theme,
     days.map((d) => d.cost),
@@ -93,6 +95,7 @@ export function historyView(
   const width = input.width - 4;
   const dim = (t: string) => theme.fg("dim", t);
   const range = RANGES[state.range] ?? RANGES[0];
+  const title = state.utc ? `${range.title} (UTC)` : range.title;
   const tabs = RANGES.map((r, i) =>
     i === state.range ? theme.inverse(theme.bold(theme.fg("accent", ` ${r.label} `))) : dim(` ${r.label} `),
   ).join("");
@@ -102,24 +105,24 @@ export function historyView(
   if (source.data.status === "error") {
     return { lines: indent([...head, fit(theme.fg("error", `Could not read this project's sessions: ${source.data.message}`), width)], 2), top: 0 };
   }
-  const totals = historyTotals(source, report, state.range);
-  const week = state.range === 0 ? historyTotals(source, report, 1).cost : null;
+  const totals = historyTotals(source, report, state.range, state.utc);
+  const week = state.range === 0 ? historyTotals(source, report, 1, state.utc).cost : null;
   const headline = joinFitting(
     [
-      theme.bold(formatUsd(totals.cost)) + dim(` ${range.title}`),
+      theme.bold(formatUsd(totals.cost)) + dim(` ${title}`),
       week !== null ? theme.bold(formatUsd(week)) + dim(" last 7 days") : theme.bold(formatUsd(totals.cost / range.days)) + dim(" per day"),
       dim(`${plural(totals.sessions.length, "session")} · ${plural(totals.calls, "call")}`),
     ],
     width,
     "      ",
   );
-  const top = [...head, headline, "", ...chartLines(input, totals, source.now), ""];
+  const top = [...head, headline, "", ...chartLines(input, totals, source.now, state.utc), ""];
   if (totals.sessions.length === 0) {
-    return { lines: indent([...top, dim(`No sessions with spend ${range.title}.`)], 2).map((l) => fit(l, input.width)), top: 0 };
+    return { lines: indent([...top, dim(`No sessions with spend ${title}.`)], 2).map((l) => fit(l, input.width)), top: 0 };
   }
   const titleWidth = Math.max(8, width - 4 - 8 - 7 - 9);
   const header =
-    pad(theme.bold(`Sessions ${range.title}`), titleWidth + 4) +
+    pad(theme.bold(`Sessions ${title}`), titleWidth + 4) +
     pad(dim("started"), 8, "right") +
     pad(dim("calls"), 7, "right") +
     pad(dim("cost"), 9, "right");

@@ -1,19 +1,22 @@
 import { dayKey } from "../../../src/report.js";
-import type { SpendRange } from "./contract.js";
+import type { SpendRange, SpendZone } from "./contract.js";
 
 export const RANGE_DAYS: Record<SpendRange, number> = { today: 1, "7d": 7, "30d": 30 };
 
-/** `count` local calendar days, oldest first, the last one `offset` days before the day of `now`. */
-export function localDays(now: number, count: number, offset = 0): string[] {
+/** `count` calendar days in `zone`, oldest first, the last one `offset` days before the day of `now`. */
+export function localDays(now: number, count: number, offset = 0, zone: SpendZone = "local"): string[] {
   const d = new Date(now);
   // Noon, so a daylight-saving shift can never move the date.
-  return Array.from({ length: count }, (_, i) =>
-    dayKey(new Date(d.getFullYear(), d.getMonth(), d.getDate() - offset - (count - 1 - i), 12).getTime()),
-  );
+  return Array.from({ length: count }, (_, i) => {
+    const back = offset + (count - 1 - i);
+    return zone === "utc"
+      ? dayKey(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - back, 12), "UTC")
+      : dayKey(new Date(d.getFullYear(), d.getMonth(), d.getDate() - back, 12).getTime());
+  });
 }
 
-/** Noon on a YYYY-MM-DD local day. */
-export function dayDate(day: string): Date {
-  const [y, m, d] = day.split("-").map(Number);
-  return new Date(y ?? 1970, (m ?? 1) - 1, d ?? 1, 12);
+/** Noon on a YYYY-MM-DD day in `zone`. */
+export function dayDate(day: string, zone: SpendZone = "local"): Date {
+  const [y = 1970, m = 1, d = 1] = day.split("-").map(Number);
+  return zone === "utc" ? new Date(Date.UTC(y, m - 1, d, 12)) : new Date(y, m - 1, d, 12);
 }

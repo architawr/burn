@@ -1,5 +1,5 @@
 import { readFile, stat } from "node:fs/promises";
-import { buildReport, type DayRow, dayKey, type EntryLike, type UsageReport } from "../../src/report.js";
+import { buildReport, type DayRow, dayKey, type EntryLike, forkedAt, type UsageReport } from "../../src/report.js";
 
 export const HISTORY_DAYS = 30;
 export const HISTORY_FILES = 200;
@@ -20,6 +20,7 @@ export interface SessionSummary {
   calls: number;
   cost: number;
   days: DayRow[];
+  utcDays: DayRow[];
 }
 
 export interface HistoryLoader {
@@ -37,6 +38,7 @@ export const summarise = (path: string, title: string, report: UsageReport): Ses
   calls: report.calls,
   cost: report.cost.total,
   days: report.days,
+  utcDays: report.utcDays,
 });
 
 /**
@@ -69,8 +71,10 @@ export function createHistoryLoader(deps: {
           continue;
         }
         try {
-          const entries = deps.parse(await readFile(file.path, "utf-8")).filter((e) => (e as EntryLike).type !== "session");
-          const summary = summarise(file.path, sessionTitle(file), buildReport(entries as EntryLike[], null));
+          const parsed = deps.parse(await readFile(file.path, "utf-8"));
+          const header = parsed.find((e) => (e as EntryLike).type === "session");
+          const entries = parsed.filter((e) => e !== header) as EntryLike[];
+          const summary = summarise(file.path, sessionTitle(file), buildReport(entries, null, { countFrom: forkedAt(header) }));
           cache.set(file.path, { mtime, summary });
           summaries.push(summary);
         } catch {
@@ -90,11 +94,13 @@ export const RANGES = [
   { label: "30 days", title: "last 30 days", days: 30, chartDays: 30 },
 ] as const;
 
-/** The last `n` local days, oldest first, as YYYY-MM-DD. */
-export function lastDays(now: number, n: number): string[] {
+/** The last `n` local days, or UTC days with `utc`, oldest first, as YYYY-MM-DD. */
+export function lastDays(now: number, n: number, utc = false): string[] {
   const today = new Date(now);
   return Array.from({ length: n }, (_, i) =>
-    dayKey(new Date(today.getFullYear(), today.getMonth(), today.getDate() - (n - 1 - i), 12).getTime()),
+    utc
+      ? dayKey(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - (n - 1 - i), 12), "UTC")
+      : dayKey(new Date(today.getFullYear(), today.getMonth(), today.getDate() - (n - 1 - i), 12).getTime()),
   );
 }
 
@@ -107,16 +113,16 @@ export interface RangeTotals {
   chart: { day: string; cost: number }[];
 }
 
-export function rangeTotals(sessions: readonly SessionSummary[], days: number, chartDays: number, now: number): RangeTotals {
-  const inRange = new Set(lastDays(now, days));
-  const chart = new Map(lastDays(now, chartDays).map((d) => [d, 0]));
+export function rangeTotals(sessions: readonly SessionSummary[], days: number, chartDays: number, now: number, utc = false): RangeTotals {
+  const inRange = new Set(lastDays(now, days, utc));
+  const chart = new Map(lastDays(now, chartDays, utc).map((d) => [d, 0]));
   const rows: RangeTotals["sessions"] = [];
   let cost = 0;
   let calls = 0;
   for (const session of sessions) {
     let sCost = 0;
     let sCalls = 0;
-    for (const d of session.days) {
+    for (const d of utc ? session.utcDays : session.days) {
       if (chart.has(d.day)) chart.set(d.day, (chart.get(d.day) as number) + d.cost);
       if (!inRange.has(d.day)) continue;
       sCost += d.cost;

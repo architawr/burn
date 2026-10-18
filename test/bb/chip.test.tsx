@@ -53,12 +53,13 @@ describe("chipView", () => {
   it("waits with a dash, never $0.00, and says why", () => {
     const waiting = view(answer({ report: null, reportedAt: null }));
     expect(waiting).toMatchObject({ tone: "waiting", value: "—", suffix: null });
-    expect(waiting.title).toContain("Restart this thread so pi can report");
+    expect(waiting.title).toContain("pi's session log");
+    expect(waiting.title).not.toMatch(/restart/i);
   });
 
-  it("says when the figure comes from pi's session log", () => {
-    expect(view(answer({ source: "log" })).title).toContain("read from pi's session log");
-    expect(view(answer()).title).not.toContain("session log");
+  it("reads the same whether the figures come from pi's report or its session log", () => {
+    expect(view(answer({ source: "log" })).title).toBe(view(answer()).title);
+    expect(view(answer({ source: "log" })).title).not.toMatch(/restart|session log/i);
   });
 
   it("shows the growing delta while pi works", () => {
@@ -109,7 +110,7 @@ describe("Burn chip", () => {
     const waiting = await none.findByRole("button", { name: /waiting for pi to report/ });
     expect(waiting.textContent).toBe("—");
     expect(waiting.className).toContain("border-dashed");
-    expect(waiting.getAttribute("title")).toContain("Restart this thread");
+    expect(waiting.getAttribute("title")).not.toMatch(/restart/i);
     const zero = await renderChip(backend(() => answer({ report: buildReport([], undefined) })));
     expect((await zero.findAllByRole("button", { name: /Thread cost \$0\.00/ })).length).toBeGreaterThan(0);
   });
@@ -209,7 +210,7 @@ describe("the chip's popover", () => {
     await vi.waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
   });
 
-  it("adds the child threads' cost, and says when the figures come from a session log", async () => {
+  it("adds the child threads' cost, and says when the figures last changed wherever they come from", async () => {
     const family = {
       total: 49.97,
       calls: 581,
@@ -221,8 +222,19 @@ describe("the chip's popover", () => {
     const slot = await renderChip(backend(() => answer({ source: "log", family })));
     const card = await openCard(slot);
     expect(card.getByTestId("with-children").textContent).toBe("$49.97 with 2 child threads");
-    const header = card.getByTitle(/does not report to Burn/);
-    expect(header.textContent).toMatch(/^from pi's log · \d+s ago$/);
+    expect(card.getByText(/^updated \d+s ago$/)).toBeTruthy();
+    expect(card.queryByText(/from pi's log|restart/i)).toBeNull();
+  });
+
+  it("refetches only on signals, never on a timer, even for figures from a session log", async () => {
+    const interval = vi.spyOn(globalThis, "setInterval");
+    const server = backend(() => answer({ source: "log" }));
+    const slot = await renderChip(server);
+    await chipButton(slot);
+    await openCard(slot);
+    expect(interval.mock.calls.map(([, ms]) => ms)).not.toContain(60_000);
+    expect(server.callsTo("usage")).toHaveLength(1);
+    interval.mockRestore();
   });
 
   it("explains the wait when pi has not reported", async () => {
@@ -230,7 +242,8 @@ describe("the chip's popover", () => {
     fireEvent.click(await slot.findByRole("button", { name: /waiting for pi/ }));
     const card = within(await slot.findByRole("dialog"));
     expect(card.getByTestId("waiting").textContent).toContain("Waiting for pi to report");
-    expect(card.getByTestId("waiting").textContent).toContain("reports after it restarts");
+    expect(card.getByTestId("waiting").textContent).toContain("once pi has written its session log");
+    expect(card.getByTestId("waiting").textContent).not.toMatch(/restart/i);
   });
 
   it("shows the call under the pointer in the per-call chart", async () => {

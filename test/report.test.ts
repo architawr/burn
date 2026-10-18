@@ -1,6 +1,9 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { buildReport, dayKey, type EntryLike, promptExcerpt, TURNS_MAX } from "../src/report.js";
+import { buildReport, dayKey, type EntryLike, forkedAt, PROMPT_MAX, promptExcerpt, slimEntry, TURNS_MAX } from "../src/report.js";
 import { assistant, compaction, toolResult, usageEntry, user } from "./helpers.js";
+
+const at = (iso: string) => <T extends { timestamp: string }>(entry: T): T => ({ ...entry, timestamp: iso });
 
 describe("buildReport", () => {
   it("returns zeros for no entries", () => {
@@ -134,7 +137,102 @@ describe("buildReport", () => {
   });
 
   it("starts as a v2 report that is not running and has no budget", () => {
-    expect(buildReport([], undefined)).toMatchObject({ version: 2, running: false, budget: null, stoppedAt: null, turns: [], days: [] });
+    expect(buildReport([], undefined)).toMatchObject({ version: 2, running: false, budget: null, stoppedAt: null, turns: [], days: [], utcDays: [] });
+  });
+
+  it("counts only entries at or after countFrom, so a fork skips its parent's copied calls", () => {
+    const copied = [at("2026-10-18T10:00:00.000Z")(user("parent")), at("2026-10-18T10:01:00.000Z")(assistant(5))];
+    const own = [at("2026-10-18T12:00:00.000Z")(user("side chat")), at("2026-10-18T12:01:00.000Z")(assistant(1.5))];
+    const r = buildReport([...copied, ...own], null, { countFrom: Date.parse("2026-10-18T12:00:00.000Z") });
+    expect(r.cost.total).toBeCloseTo(1.5);
+    expect(r).toMatchObject({ calls: 1, turnCount: 1, startedAt: Date.parse("2026-10-18T12:00:00.000Z") });
+    expect(r.turns.map((t) => [t.n, t.prompt])).toEqual([[1, "side chat"]]);
+    expect(buildReport([...copied, ...own], null, { countFrom: null }).cost.total).toBeCloseTo(6.5);
+  });
+
+  it("totals spend per UTC day beside the local days, and per the given zone's days", () => {
+    const late = at("2026-10-18T23:30:00.000Z")(assistant(1));
+    const early = at("2026-10-19T00:30:00.000Z")(assistant(2));
+    const r = buildReport([user(), late, early], null, { timeZone: "America/Toronto" });
+    expect(r.days.map((d) => [d.day, d.cost, d.calls])).toEqual([["2026-10-18", 3, 2]]);
+    expect(r.utcDays.map((d) => [d.day, d.cost, d.calls])).toEqual([
+      ["2026-10-18", 1, 1],
+      ["2026-10-19", 2, 1],
+    ]);
+    expect(r.utcDays[1]?.models).toEqual([{ key: "p/m1", cost: 2 }]);
+  });
+});
+
+describe("dayKey", () => {
+  it("gives the calendar day in the process zone, or in the zone named", () => {
+    const ms = Date.parse("2026-10-18T23:30:00.000Z");
+    const d = new Date(ms);
+    expect(dayKey(ms)).toBe(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
+    expect(dayKey(ms, "UTC")).toBe("2026-10-18");
+    expect(dayKey(ms, "Asia/Tokyo")).toBe("2026-10-19");
+    expect(dayKey(ms, "America/Los_Angeles")).toBe("2026-10-18");
+  });
+});
+
+describe("forkedAt", () => {
+  it("is the header's time when the session was forked from another, else null", () => {
+    const header = { type: "session", version: 3, id: "s", timestamp: "2026-10-18T12:00:00.000Z", cwd: "/tmp" };
+    expect(forkedAt({ ...header, parentSession: "/tmp/parent.jsonl" })).toBe(Date.parse("2026-10-18T12:00:00.000Z"));
+    expect(forkedAt(header)).toBeNull();
+    expect(forkedAt({ ...header, parentSession: "" })).toBeNull();
+    expect(forkedAt({ ...header, parentSession: "/p", timestamp: "not a date" })).toBeNull();
+    expect(forkedAt(null)).toBeNull();
+    expect(forkedAt(undefined)).toBeNull();
+  });
+});
+
+describe("slimEntry", () => {
+  const raw = readFileSync(new URL("./fixtures/session.jsonl", import.meta.url), "utf8")
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => JSON.parse(line) as unknown);
+  const entries = raw.filter((e) => (e as EntryLike).type !== "session") as EntryLike[];
+
+  it("builds the same report from slim entries as from a real session log", () => {
+    const slim = raw.map(slimEntry).filter((e) => e !== null);
+    expect(slim).toHaveLength(entries.length);
+    expect(buildReport(slim, null)).toEqual(buildReport(entries, null));
+    expect(buildReport(entries, null).calls).toBeGreaterThan(10);
+  });
+
+  it("keeps only what the report reads", () => {
+    const long = `${"word ".repeat(60)}end`;
+    const call = assistant(1, "m1", {}, "p", ["bash", "read"]);
+    const slim = slimEntry({ ...call, id: "x", message: { ...call.message, api: "a", content: [...call.message.content, { type: "thinking", thinking: long }] } });
+    expect(slim).toEqual({
+      type: "message",
+      timestamp: call.timestamp,
+      message: {
+        role: "assistant",
+        provider: "p",
+        model: "m1",
+        usage: call.message.usage,
+        content: [
+          { type: "toolCall", name: "bash" },
+          { type: "toolCall", name: "read" },
+        ],
+      },
+    });
+    const prompt = slimEntry(user([{ type: "text", text: long }, { type: "image", data: "…" }])) as unknown as { message: { content: string } };
+    expect(prompt.message.content).toHaveLength(PROMPT_MAX);
+    expect(slimEntry({ type: "model_change", id: "m", timestamp: "2026-10-18T12:00:00.000Z", modelId: "x" })).toEqual({
+      type: "model_change",
+      timestamp: "2026-10-18T12:00:00.000Z",
+    });
+    const branch = { type: "branch_summary", timestamp: "2026-10-18T12:00:00.000Z", summary: long, usage: compaction(1).usage };
+    expect(slimEntry(branch)).toEqual({ type: "branch_summary", timestamp: branch.timestamp, usage: branch.usage });
+    const spent = usageEntry(2, "q", "m2");
+    expect(slimEntry({ ...spent, kind: "cache_warm" })).toEqual(spent);
+  });
+
+  it("is null for the session header and for anything that is not an entry", () => {
+    expect(slimEntry({ type: "session", timestamp: "2026-10-18T12:00:00.000Z", parentSession: "/p" })).toBeNull();
+    for (const value of [null, 1, "x", [], { type: "message" }, { timestamp: "t" }, { type: 1, timestamp: "t" }]) expect(slimEntry(value)).toBeNull();
   });
 });
 

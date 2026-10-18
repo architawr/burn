@@ -1,6 +1,7 @@
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { reportKey } from "../../extensions/bb/keys.js";
+import { dayDate, localDays } from "../../extensions/bb/spend/days.js";
 import { checkDailyBudget, createSpendHandlers, type SpendDeps } from "../../extensions/bb/spend/server.js";
 import { dayKey, type DayRow, type UsageReport } from "../../src/report.js";
 import { sampleReport } from "../helpers.js";
@@ -8,6 +9,7 @@ import { sampleReport } from "../helpers.js";
 const NOW = new Date(2026, 9, 18, 15, 0, 0).getTime();
 const DAY_MS = 86_400_000;
 const ago = (n: number): string => dayKey(new Date(2026, 9, 18 - n, 12).getTime());
+const utcAgo = (n: number): string => localDays(NOW, 1, n, "utc")[0] as string;
 
 interface Seed {
   title?: string | null;
@@ -226,6 +228,25 @@ describe("spend", () => {
     expect(out.threads[2]?.running).toBe(false);
   });
 
+  it("sums each thread's UTC days over UTC calendar days when asked, and says which", async () => {
+    const utc = (n: number, cost: number): DayRow => ({ day: utcAgo(n), cost, calls: 1, models: [{ key: "p/claude-opus", cost }] });
+    const s = await setup({
+      reports: {
+        thr_aaaaaa01: reportWith([day(0, 2)], { utcDays: [utc(1, 1), utc(0, 5)] }),
+        // Burn 0.2 sent no UTC days; its local days stand in for them.
+        thr_aaaaaa02: reportWith([day(1, 3)], { utcDays: [] }),
+      },
+      threads: { thr_aaaaaa01: {}, thr_aaaaaa02: {} },
+    });
+    const today = await s.spend({ range: "today", projectId: null, tz: "utc" });
+    expect(today).toMatchObject({ tz: "utc", total: 5 });
+    expect(today.days.map((d) => d.day)).toEqual([utcAgo(0)]);
+    const week = await s.spend({ range: "7d", projectId: null, tz: "utc" });
+    expect(week.days.map((d) => d.day)).toEqual(localDays(NOW, 7, 0, "utc"));
+    expect(week.total).toBeCloseTo(9);
+    expect(await s.spend({ range: "today", projectId: null })).toMatchObject({ tz: "local", total: 2 });
+  });
+
   it("counts threads over their effective budget", async () => {
     const s = await setup({
       reports: {
@@ -350,6 +371,16 @@ describe("spend", () => {
     expect(out.threads).toHaveLength(10);
     expect(out.models.length).toBeLessThanOrEqual(4);
     expect(elapsed).toBeLessThan(1000);
+  });
+});
+
+describe("localDays and dayDate", () => {
+  it("count UTC calendar days, and noon of a UTC day, when asked", () => {
+    const late = Date.UTC(2026, 9, 18, 23, 30);
+    expect(localDays(late, 2, 0, "utc")).toEqual(["2026-10-17", "2026-10-18"]);
+    expect(localDays(late, 1, 1, "utc")).toEqual(["2026-10-17"]);
+    expect(dayDate("2026-10-18", "utc").toISOString()).toBe("2026-10-18T12:00:00.000Z");
+    expect(dayDate("2026-10-18").getHours()).toBe(12);
   });
 });
 

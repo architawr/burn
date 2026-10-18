@@ -28,6 +28,7 @@ const session = (path: string, title: string, cost: number, calls: number, hours
   calls,
   cost,
   days: [{ day: dayKey(NOW - hoursAgo * 3_600_000), cost, calls, models: [] }],
+  utcDays: [{ day: dayKey(NOW - hoursAgo * 3_600_000, "UTC"), cost, calls, models: [] }],
 });
 
 const history = (sessions: SessionSummary[]) => ({
@@ -269,6 +270,26 @@ describe("BurnPanel history", () => {
     p.handleInput(KEY.down);
     p.handleInput(KEY.enter);
     expect(done).toHaveBeenCalledWith({ resume: "/s/other" });
+  });
+
+  it("switches between local and UTC days with u", async () => {
+    const yesterday: SessionSummary = {
+      ...session("/s/utc", "late last night", 2, 3, 2),
+      days: [{ day: "2026-10-17", cost: 2, calls: 3, models: [] }],
+      utcDays: [{ day: dayKey(NOW, "UTC"), cost: 2, calls: 3, models: [] }],
+    };
+    const { p } = panel({ view: "history", history: history([yesterday]), report: sampleReport({ days: [], utcDays: [] }) });
+    await flush();
+    const local = text(p.render(120));
+    expect(local).toContain("u UTC");
+    expect(local).not.toContain("late last night");
+    p.handleInput("u");
+    const utc = text(p.render(120));
+    expect(utc).toContain("$2.00 today (UTC)");
+    expect(utc).toContain("late last night");
+    expect(utc).toContain("u local");
+    p.handleInput("u");
+    expect(text(p.render(120))).not.toContain("(UTC)");
   });
 
   it("reports a failed load", async () => {

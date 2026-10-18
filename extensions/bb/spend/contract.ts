@@ -4,12 +4,16 @@ import { z } from "zod";
 
 export const SPEND_RANGES = ["today", "7d", "30d"] as const;
 export type SpendRange = (typeof SPEND_RANGES)[number];
+/** Which calendar days count: the bb server's local ones, or UTC ones as Shopify's AI proxy counts them. */
+export const SPEND_ZONES = ["local", "utc"] as const;
+export type SpendZone = (typeof SPEND_ZONES)[number];
 
 const amount = z.number().finite().nonnegative();
 
 export const spendOutputSchema = z.object({
   range: z.enum(SPEND_RANGES),
-  /** Local days covered, oldest first, YYYY-MM-DD. */
+  tz: z.enum(SPEND_ZONES),
+  /** Days covered in `tz`, oldest first, YYYY-MM-DD. */
   days: z.array(z.object({ day: z.string(), cost: amount, models: z.array(z.object({ key: z.string(), cost: amount })) })),
   total: amount,
   /** The same length of time just before the range, for "▲ 18% vs previous 7 days". */
@@ -44,7 +48,7 @@ export type SpendOutput = z.infer<typeof spendOutputSchema>;
 
 export const spendMethods = {
   spend: {
-    input: z.object({ range: z.enum(SPEND_RANGES), projectId: z.string().max(100).nullable() }),
+    input: z.object({ range: z.enum(SPEND_RANGES), projectId: z.string().max(100).nullable(), tz: z.enum(SPEND_ZONES).default("local") }),
     output: spendOutputSchema,
   },
 };

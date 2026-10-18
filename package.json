@@ -24,6 +24,7 @@
     },
     "server": "./extensions/bb/server.ts",
     "app": "./extensions/bb/app.tsx",
+    "host": "./extensions/bb/host/entry.ts",
     "skills": []
   },
   "pi": {

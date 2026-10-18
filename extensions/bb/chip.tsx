@@ -36,8 +36,7 @@ export interface ChipView {
   title: string;
 }
 
-const WAITING_TITLE =
-  "Waiting for pi to report. Restart this thread so pi can report: a thread started before Burn was installed reports after a restart.";
+const WAITING_TITLE = "Waiting for pi to report. Burn shows the cost after the thread's first prompt, from pi's session log.";
 
 /** What the chip shows for an answer; pure so every state can be tested. */
 export function chipView(answer: UsageAnswer | null, opts: { now: number; fresh: boolean; chipShows: "delta" | "cost" }): ChipView {
@@ -83,9 +82,7 @@ export function chipView(answer: UsageAnswer | null, opts: { now: number; fresh:
     label: `Thread cost ${total}${budgetNote}. Click for the breakdown.`,
     title: stale
       ? `Thread cost ${total}. pi has not reported for ${formatAgo(reportedAt, opts.now)} while it was working.`
-      : answer?.source === "log"
-        ? `Thread cost ${total}${budgetNote}, read from pi's session log because this thread does not report to Burn. Restart it for live updates and budgets.`
-        : `Thread cost ${total}${budgetNote}${running ? ", pi is working" : ""}. Click for the breakdown.`,
+      : `Thread cost ${total}${budgetNote}${running ? ", pi is working" : ""}. Click for the breakdown.`,
   };
 }
 

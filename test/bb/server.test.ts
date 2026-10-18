@@ -1,13 +1,9 @@
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BurnAlert } from "../../extensions/bb/alerts.js";
-import { sessionPath } from "../../extensions/bb/logs.js";
 import plugin, { SETTINGS } from "../../extensions/bb/server.js";
 import * as spendServer from "../../extensions/bb/spend/server.js";
-import type { UsageReport } from "../../src/report.js";
+import type { EntryLike, UsageReport } from "../../src/report.js";
 import { buildReport, dayKey } from "../../src/report.js";
 import { assistant, sampleReport, toolResult, user } from "../helpers.js";
 
@@ -24,44 +20,55 @@ type Options = {
   settings?: Record<string, number | boolean | string>;
   descendants?: Record<string, string[]>;
   titles?: Record<string, string>;
-  /** Session log entries per thread, written where bb's pi bridge keeps them. */
+  /** Session log entries per thread, as the Burn host entry on the thread's machine reads them. */
   logs?: Record<string, unknown[]>;
+  /** bb's status per thread; idle when not given. */
+  statuses?: Record<string, "active" | "idle">;
   /** What `threads.list` returns. */
   listed?: { id: string; providerId: string; updatedAt: number; deletedAt: number | null }[];
 };
 
 const LOG_MTIME = 1_700_000_000_000;
-
-function writeLogs(logs: Record<string, unknown[]>): string {
-  const dataDir = mkdtempSync(join(tmpdir(), "burn-server-"));
-  disposers.push(() => rmSync(dataDir, { recursive: true, force: true }));
-  mkdirSync(join(dataDir, "pi-bridge-sessions"));
-  for (const [threadId, entries] of Object.entries(logs)) {
-    const path = sessionPath(dataDir, `pi_${threadId}`);
-    writeFileSync(path, entries.map((e) => JSON.stringify(e)).join("\n"));
-    utimesSync(path, LOG_MTIME / 1000, LOG_MTIME / 1000);
-  }
-  return dataDir;
-}
+const HOST = "host_1";
 
 async function setup(opts: Options = {}) {
   const logs = opts.logs ?? {};
+  const statuses = opts.statuses ?? {};
   const { bb, harness } = createFakePluginHost({
     pluginId: "pi-burn",
     settings: opts.settings,
-    dataDir: writeLogs(logs),
     sdk: {
       threads: {
         list: async () => opts.listed ?? [],
         events: {
-          list: async ({ threadId }: { threadId: string }) =>
-            threadId in logs ? [{ type: "thread/identity", threadId, seq: 1, data: { providerThreadId: `pi_${threadId}` } }] : [],
+          list: async ({ threadId }: { threadId: string }) => [{ type: "thread/identity", threadId, seq: 1, data: { providerThreadId: `pi_${threadId}` } }],
         },
-        get: async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, title: opts.titles?.[threadId] ?? null }),
+        get: async ({ threadId }: { threadId: string }) =>
+          makeThreadResponse({
+            id: threadId,
+            title: opts.titles?.[threadId] ?? null,
+            providerId: "pi",
+            environmentId: "env_1",
+            status: statuses[threadId] ?? "idle",
+          }),
+        stop: async () => ({ ok: true as const }),
         experimental_listDescendants: async ({ threadIds }: { threadIds: readonly string[] }) => ({
           threads: threadIds.map((threadId) => ({ threadId, descendantIds: opts.descendants?.[threadId] ?? [] })),
         }),
       },
+      environments: { get: async () => ({ id: "env_1", hostId: HOST }) },
+    },
+    experimental_callHostRpc: async ({ input }) => {
+      const { threads, timeZone } = input as { threads: { threadId: string }[]; timeZone: string };
+      return {
+        dir: "/home/me/.bb/pi-bridge-sessions",
+        reports: threads.map(({ threadId }) => {
+          const entries = logs[threadId];
+          return entries
+            ? { threadId, report: buildReport(entries as EntryLike[], null, { timeZone }), at: LOG_MTIME }
+            : { threadId, report: null, at: null };
+        }),
+      };
     },
   });
   await plugin(bb);
@@ -76,7 +83,13 @@ async function setup(opts: Options = {}) {
   const usage = (threadId = THREAD) => rpc<Record<string, any>>("usage", { threadId });
   const signals = () => harness.inspection.realtimeSignals.filter((s) => s.channel === "usage");
   const alerts = () => harness.inspection.realtimeSignals.filter((s) => s.channel === "alert").map((s) => s.payload as BurnAlert);
-  return { bb, harness, post, rpc, usage, signals, alerts };
+  /** Appends to a thread's log and has its host say so, as the host entry's watch does. */
+  const spend = (threadId: string, ...entries: unknown[]) => {
+    logs[threadId] = [...(logs[threadId] ?? []), ...entries];
+    return harness.behavior.experimental_emitHostSignal(HOST, "changed", { sessionIds: [`pi_${threadId}`], all: false });
+  };
+  const stops = () => harness.inspection.sdk.callsTo("threads.stop");
+  return { bb, harness, post, rpc, usage, signals, alerts, logs, statuses, spend, stops };
 }
 
 const envelope = (sentAt: number, over: Partial<UsageReport> = {}, threadId = THREAD) => ({ threadId, sentAt, report: sampleReport(over) });
@@ -114,6 +127,7 @@ describe("settings", () => {
     expect(stop?.description).toMatch(/^Off by default/);
     expect(stop?.description).toContain("only the pi run whose cost crosses");
     expect(stop?.description).toContain("Send another prompt to continue");
+    expect(stop?.description).toContain("without it, Burn stops the thread's current work through bb");
     expect(SETTINGS.notifyExpensiveTurn.description).toContain("at least 3 times the thread's median turn and at least $0.50");
   });
 
@@ -192,14 +206,16 @@ describe("POST /usage", () => {
     expect(entries.map((e) => [e.name, e.value])).toEqual([["BURN_BB_URL", { serverPath: "/api/v1/plugins/pi-burn/http/usage" }]]);
   });
 
-  it("forgets a deleted thread's report and budget", async () => {
-    const s = await setup();
+  it("forgets a deleted thread's report, budget, log copy and stop", async () => {
+    const s = await setup({ logs: { [THREAD]: [user(), assistant(1)] } });
     await s.post(envelope(1));
     await s.rpc("setBudget", { threadId: THREAD, budget: 3 });
+    await s.bb.storage.kv.set(`stopped:${THREAD}`, { at: 5 });
+    expect(await s.bb.storage.kv.get(`log:${THREAD}`)).toMatchObject({ at: LOG_MTIME });
+    delete s.logs[THREAD];
     await s.harness.behavior.emitThreadEvent("thread.deleted", { thread: makeThreadResponse({ id: THREAD }) });
     expect(await s.usage()).toMatchObject({ report: null, reportedAt: null, budget: null });
-    expect(await s.bb.storage.kv.get(`report:${THREAD}`)).toBeUndefined();
-    expect(await s.bb.storage.kv.get(`budget:${THREAD}`)).toBeUndefined();
+    for (const key of ["report", "budget", "log", "stopped"]) expect(await s.bb.storage.kv.get(`${key}:${THREAD}`), key).toBeUndefined();
   });
 
   it("evicts the least recently updated thread from memory above 500 threads", async () => {
@@ -290,17 +306,36 @@ describe("alerts", () => {
     const running: Partial<UsageReport> = { turns: [...cheap, { ...turns[3]!, n: 5, cost: 0.1 }], turnCount: 5, running: true };
     const done: Partial<UsageReport> = { turns: [...cheap, { ...turns[3]!, n: 5, cost: 1.5 }], turnCount: 5, running: false };
 
-    const quiet = await setup();
-    await quiet.post(envelope(1, running));
-    await quiet.post(envelope(2, done));
+    // bb says when the turn ends, and each step is looked at as it happens.
+    const idle = { thread: makeThreadResponse({ id: THREAD, providerId: "pi", status: "idle" }), lastAssistantText: null };
+    const steps = async (t: Awaited<ReturnType<typeof setup>>) => {
+      await t.post(envelope(1, running));
+      await settle();
+      await t.post(envelope(2, done));
+      await settle();
+      await t.harness.behavior.emitThreadEvent("thread.idle", idle);
+      await settle();
+      await t.post(envelope(3, done));
+    };
+    const quiet = await setup({ statuses: { [THREAD]: "active" } });
+    await steps(quiet);
     await settle();
-    const on = await setup({ settings: { notifyExpensiveTurn: true } });
-    await on.post(envelope(1, running));
-    await on.post(envelope(2, done));
-    await on.post(envelope(3, done));
+    const on = await setup({ settings: { notifyExpensiveTurn: true }, statuses: { [THREAD]: "active" } });
+    await steps(on);
     await vi.waitFor(() => expect(on.alerts()).toHaveLength(1));
     expect(on.alerts()[0]).toMatchObject({ id: `expensive:${THREAD}:5`, kind: "expensive", body: "Turn 5 cost $1.50, 7.5 times the thread's median turn." });
     expect(quiet.alerts()).toEqual([]);
+  });
+
+  it("alerts on a thread that never reported as its log grows, from the second sighting on", async () => {
+    const s = await setup({ settings: { threadBudget: 10 }, titles: { [THREAD]: "Quiet worker" }, logs: { [THREAD]: [user(), assistant(7)] } });
+    await s.usage();
+    await s.spend(THREAD, assistant(0.5));
+    await vi.waitFor(() => expect(s.signals()).toHaveLength(1));
+    await s.spend(THREAD, assistant(1));
+    await vi.waitFor(() => expect(s.alerts()).toHaveLength(1));
+    expect(s.alerts()[0]).toMatchObject({ kind: "near", threadId: THREAD, body: "$8.50 of the $10 thread budget (85%)." });
+    expect(s.signals().length).toBeGreaterThanOrEqual(2);
   });
 
   it("publishes the daily budget alert the Spend module returns", async () => {
@@ -315,7 +350,11 @@ describe("alerts", () => {
 
 describe("costs, overBudget and family", () => {
   it("adds up a thread and its reported descendants", async () => {
-    const s = await setup({ descendants: { [THREAD]: [CHILD, GRANDCHILD, "thr_eeeeeeee"] }, titles: { [CHILD]: "Write chip tests" } });
+    const s = await setup({
+      descendants: { [THREAD]: [CHILD, GRANDCHILD, "thr_eeeeeeee"] },
+      titles: { [CHILD]: "Write chip tests" },
+      statuses: { [CHILD]: "active" },
+    });
     await s.post(envelope(1, { ...costOf(4.82), calls: 23 }));
     await s.post(envelope(1, { ...costOf(1.1), calls: 14, running: true }, CHILD));
     await s.post(envelope(1, { ...costOf(0.72), calls: 9 }, GRANDCHILD));
@@ -341,6 +380,15 @@ describe("costs, overBudget and family", () => {
       { threadId: "thr_ffffffff", cost: null, label: null, familyCost: null, budget: { amount: 10, source: "setting" }, state: "ok" },
     ]);
     await expect(s.rpc("costs", { threadIds: [] })).rejects.toThrow();
+  });
+
+  it("lists threads over budget that never reported, from their logs", async () => {
+    const s = await setup({
+      settings: { threadBudget: 10 },
+      logs: { [CHILD]: [user(), assistant(12)] },
+      listed: [{ id: CHILD, providerId: "pi", updatedAt: Date.now(), deletedAt: null }],
+    });
+    expect(await s.rpc("overBudget", {})).toEqual({ threads: [{ threadId: CHILD, cost: 12, budget: 10 }] });
   });
 
   it("lists every stored thread over its budget", async () => {
@@ -386,13 +434,32 @@ describe("costs, overBudget and family", () => {
     expect(spend.total).toBeCloseTo(5);
   });
 
-  it("prefers the log over a report from Burn 0.1, which has no prompts or days", async () => {
+  it("takes the figures from the log over a report from Burn 0.1, which has no prompts or days", async () => {
     const s = await setup({ logs: { [THREAD]: [user("hi"), assistant(2)] } });
-    const { turnCount, turns, days, running, budget, stoppedAt, ...rest } = sampleReport(costOf(9));
+    const { turnCount, turns, days, utcDays, running, budget, stoppedAt, ...rest } = sampleReport(costOf(9));
     await s.post({ threadId: THREAD, sentAt: 1, report: { ...rest, version: 1, series: [] } });
     const got = await s.usage();
-    expect(got.source).toBe("log");
+    expect(got.report).toMatchObject({ turnCount: 1, calls: 1 });
     expect(got.report.cost.total).toBeCloseTo(2);
+  });
+
+  it("takes every figure from the log and only the budget, stop and context from pi's report", async () => {
+    const s = await setup({ logs: { [THREAD]: [user("hi"), assistant(1.5)] } });
+    const context = { tokens: 5, window: 10, percent: 50 };
+    await s.post(envelope(1, { ...costOf(9), calls: 40, budget: 6, stoppedAt: 1000, context, running: true }));
+    const got = await s.usage();
+    expect(got).toMatchObject({ source: "pi", budget: { amount: 6, source: "pi" } });
+    expect(got.report).toMatchObject({ calls: 1, budget: 6, stoppedAt: 1000, context, running: false });
+    expect(got.report.cost.total).toBeCloseTo(1.5);
+    expect(got.reportedAt).toBeGreaterThan(LOG_MTIME);
+  });
+
+  it("says the figures come from the log once pi has not reported for two minutes", async () => {
+    const s = await setup({ logs: { [THREAD]: [user("hi"), assistant(1.5)] } });
+    await s.post(envelope(1));
+    const later = Date.now() + 2 * 60_000;
+    vi.spyOn(Date, "now").mockReturnValue(later);
+    expect((await s.usage()).source).toBe("log");
   });
 
   it("counts archived and hidden child threads", async () => {
@@ -408,5 +475,66 @@ describe("costs, overBudget and family", () => {
     const got = (await harness.behavior.callRpc("usage", { threadId: THREAD })) as Record<string, any>;
     expect(got).toMatchObject({ report: null, title: null, family: { total: 0, calls: 0, children: [] }, policy: QUIET });
     expect(harness.inspection.logEntries.some((e) => e.level === "warn")).toBe(true);
+  });
+});
+
+describe("stop at budget, for threads without the pi extension", () => {
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
+  const logs = () => ({ [THREAD]: [user(), assistant(9)] });
+  const ON = { threadBudget: 10, stopAtBudget: true };
+
+  /** Sees the thread once, as bb's thread.active does, then spends `costs` one call at a time. */
+  async function run(s: Awaited<ReturnType<typeof setup>>, ...costs: number[]) {
+    await s.harness.behavior.emitThreadEvent("thread.active", { thread: makeThreadResponse({ id: THREAD, providerId: "pi", status: "active" }) });
+    await settle();
+    for (const cost of costs) {
+      await s.spend(THREAD, assistant(cost));
+      await settle();
+    }
+  }
+
+  it("never stops a thread with the default settings", async () => {
+    const s = await setup({ settings: { threadBudget: 10 }, statuses: { [THREAD]: "active" }, logs: logs() });
+    await run(s, 2, 5);
+    expect(s.stops()).toEqual([]);
+    expect(SETTINGS.stopAtBudget.default).toBe(false);
+  });
+
+  it("stops the running thread once, on the change that crosses its budget, and says so", async () => {
+    const s = await setup({ settings: ON, statuses: { [THREAD]: "active" }, titles: { [THREAD]: "Big job" }, logs: logs() });
+    await run(s, 0.5, 1, 2);
+    await vi.waitFor(() => expect(s.stops()).toHaveLength(1));
+    await settle();
+    expect(s.stops()).toEqual([[{ threadId: THREAD }]]);
+    const record = await s.bb.storage.kv.get<{ at: number }>(`stopped:${THREAD}`);
+    expect(record).toEqual({ at: expect.any(Number) });
+    const stopped = s.alerts().filter((a) => a.kind === "stopped");
+    expect(stopped).toEqual([expect.objectContaining({ id: `stopped:${THREAD}:${record?.at}`, title: "Burn stopped “Big job” at its $10 budget" })]);
+    expect((await s.usage()).report.stoppedAt).toBe(record?.at);
+  });
+
+  it("never stops on the first sighting, even of a thread already over its budget", async () => {
+    const s = await setup({ settings: ON, statuses: { [THREAD]: "active" }, logs: { [THREAD]: [user(), assistant(12)] } });
+    await run(s);
+    await s.usage();
+    expect(s.stops()).toEqual([]);
+  });
+
+  it("never stops a thread whose pi extension has reported, which stops its own run", async () => {
+    const s = await setup({ settings: ON, statuses: { [THREAD]: "active" }, logs: logs() });
+    await s.post(envelope(1, costOf(9)));
+    await settle();
+    await run(s, 2);
+    expect(s.stops()).toEqual([]);
+  });
+
+  it("never stops a thread bb does not say is working", async () => {
+    const s = await setup({ settings: ON, logs: logs() });
+    await s.usage();
+    await s.spend(THREAD, assistant(0.5));
+    await settle();
+    await s.spend(THREAD, assistant(2));
+    await settle();
+    expect(s.stops()).toEqual([]);
   });
 });

@@ -10,7 +10,7 @@ import {
 import type { TUI } from "@earendil-works/pi-tui";
 import { type BudgetPolicy, budgetAlert, isExpensiveTurn, NEAR_FRACTION, parseBudget, shouldStop } from "../../src/budget.js";
 import { formatBudget, formatDelta, formatUsd, summaryMarkdown, turnMultiple } from "../../src/format.js";
-import { buildReport, type UsageReport } from "../../src/report.js";
+import { buildReport, forkedAt, type UsageReport } from "../../src/report.js";
 import { type BbReporter, createBbReporter } from "./bb-report.js";
 import { completions, parseCommand, SUBCOMMANDS } from "./commands.js";
 import { createHistoryLoader, type HistoryLoader, type SessionFile } from "./history.js";
@@ -92,7 +92,7 @@ export function createBurn(deps: BurnDeps = {}): (pi: ExtensionAPI) => void {
       const entries = ctx.sessionManager.getEntries();
       const thread = threadBudget(entries);
       const policy = effectivePolicy(reporter.policy(), thread, settings);
-      const report = buildReport(entries, contextOf(ctx));
+      const report = buildReport(entries, contextOf(ctx), { countFrom: forkedAt(ctx.sessionManager.getHeader()) });
       report.running = running;
       report.budget = ownBudget(thread, settings);
       report.stoppedAt = stoppedAt;

@@ -5,7 +5,7 @@ import { type DayRow, dayKey, OTHER_KEY, TOOLS_KEY, type UsageReport } from "../
 import type { BurnAlert } from "../alerts.js";
 import { REPORT_PREFIX } from "../keys.js";
 import { type Stored, storedSchema } from "../schema.js";
-import type { SpendOutput, SpendRange } from "./contract.js";
+import type { SpendOutput, SpendRange, SpendZone } from "./contract.js";
 import { dayDate, localDays, RANGE_DAYS } from "./days.js";
 
 export interface SpendDeps {
@@ -108,9 +108,13 @@ function topKeys(costs: Map<string, number>, max: number): { keys: string[]; fol
   return { keys, fold: (key) => (head.has(key) ? key : OTHER_KEY) };
 }
 
-function rangeModels(report: UsageReport, inRange: ReadonlySet<string>): Map<string, number> {
+/** A report's spend per day in `zone`. Burn 0.2 sent no UTC days, so its local days stand in for them. */
+const daysIn = (report: UsageReport, zone: SpendZone): DayRow[] =>
+  zone === "utc" && report.utcDays.length > 0 ? report.utcDays : report.days;
+
+function rangeModels(days: readonly DayRow[], inRange: ReadonlySet<string>): Map<string, number> {
   const models = new Map<string, number>();
-  for (const d of report.days) if (inRange.has(d.day)) for (const m of d.models) add(models, m.key, m.cost);
+  for (const d of days) if (inRange.has(d.day)) for (const m of d.models) add(models, m.key, m.cost);
   return models;
 }
 
@@ -122,7 +126,7 @@ function topModel(models: Map<string, number>, report: UsageReport): string | nu
 }
 
 export function createSpendHandlers(deps: SpendDeps): {
-  spend(input: { range: SpendRange; projectId: string | null }): Promise<SpendOutput>;
+  spend(input: { range: SpendRange; projectId: string | null; tz?: SpendZone }): Promise<SpendOutput>;
 } {
   const now = deps.now ?? Date.now;
   const { bb } = deps;
@@ -172,15 +176,15 @@ export function createSpendHandlers(deps: SpendDeps): {
   }
 
   return {
-    async spend({ range, projectId }) {
+    async spend({ range, projectId, tz = "local" }) {
       const today = now();
       const length = RANGE_DAYS[range];
-      const dayList = localDays(today, length);
+      const dayList = localDays(today, length, 0, tz);
       const inRange: ReadonlySet<string> = new Set(dayList);
-      const before = new Set(localDays(today, length, length));
+      const before = new Set(localDays(today, length, length, tz));
 
       // A day of slack: the range and the period before it, whatever daylight saving does.
-      const since = dayDate(dayList[0] as string).getTime() - (length + 1) * DAY_MS;
+      const since = dayDate(dayList[0] as string, tz).getTime() - (length + 1) * DAY_MS;
       const entries = deps.reports ? await deps.reports(since) : await readReports(bb);
       const [metas, names, dailyBudget] = await Promise.all([
         threadMeta(entries.map((e) => e.threadId)),
@@ -203,7 +207,7 @@ export function createSpendHandlers(deps: SpendDeps): {
         if (projectId !== null && meta.projectId !== projectId) continue;
         let rangeCost = 0;
         let calls = 0;
-        for (const d of entry.report.days) {
+        for (const d of daysIn(entry.report, tz)) {
           if (before.has(d.day)) previousTotal += d.cost;
           const slot = perDay.get(d.day);
           if (!slot) continue;
@@ -251,7 +255,7 @@ export function createSpendHandlers(deps: SpendDeps): {
         threadId: row.threadId,
         title: row.meta.title,
         projectName: names.get(row.meta.projectId) ?? null,
-        model: topModel(rangeModels(row.report, inRange), row.report),
+        model: topModel(rangeModels(daysIn(row.report, tz), inRange), row.report),
         childCount: row.meta.childCount,
         calls: row.calls,
         rangeCost: row.rangeCost,
@@ -271,6 +275,7 @@ export function createSpendHandlers(deps: SpendDeps): {
 
       return {
         range,
+        tz,
         days,
         total,
         previousTotal,

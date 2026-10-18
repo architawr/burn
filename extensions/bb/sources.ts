@@ -1,0 +1,224 @@
+import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { z } from "zod";
+import type { UsageReport } from "../../src/report.js";
+import { HOST_BATCH, hostContract, hostSignals } from "./host/contract.js";
+import { sessionStem } from "./host/pi-sessions.js";
+import { logKey } from "./keys.js";
+import { usageReportSchema } from "./schema.js";
+
+const FACTS_TTL_MS = 5 * 60_000;
+const REPORT_TTL_MS = 60_000;
+/** How long an unreachable host is left alone, and how often its failure is logged. */
+const HOST_RETRY_MS = 60_000;
+const HOST_TIMEOUT_MS = 25_000;
+const SESSIONS_MAX = 32;
+const CACHE_MAX = 1000;
+
+/** A report read from a thread's pi session logs; `at` is when the newest log last changed. */
+export interface LogReport {
+  report: UsageReport;
+  at: number;
+}
+
+export interface ReportSource {
+  /** The latest log report of each thread that has one: from its host, else the last one kept. */
+  reportsOf(threadIds: readonly string[]): Promise<Map<string, LogReport>>;
+  /** Whether bb says the thread is working right now. */
+  running(threadId: string): Promise<boolean>;
+  forget(threadId: string): void;
+}
+
+/** What bb says about a thread: the machine that keeps its logs (null for none, or not pi) and its pi sessions. */
+interface Facts {
+  at: number;
+  hostId: string | null;
+  sessionIds: string[];
+  /** The file names the host reports changes by. */
+  stems: Set<string>;
+}
+
+const logSchema = z.object({ report: usageReportSchema, at: z.number() });
+
+const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+function remember<V>(map: Map<string, V>, key: string, value: V): void {
+  map.delete(key);
+  map.set(key, value);
+  if (map.size > CACHE_MAX) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  }
+}
+
+/**
+ * Every pi thread's report, read by the Burn host entry from the thread's
+ * session logs on the machine that runs it. Reports are kept until the host
+ * signals that one of the thread's logs changed, or a minute passes; then
+ * `onChange` names the threads to look at again.
+ */
+export function createReportSource(bb: BbPluginApi, opts: { onChange(threadIds: string[]): void; now?: () => number }): ReportSource {
+  const now = opts.now ?? Date.now;
+  const host = bb.hosts.experimental_client({ contract: hostContract, experimental_signals: hostSignals });
+  const facts = new Map<string, Facts>();
+  const statuses = new Map<string, string>();
+  // Thread events seen per thread, so a lookup that an event overtook does not undo it.
+  const heard = new Map<string, number>();
+  const reports = new Map<string, { got: LogReport | null; checkedAt: number }>();
+  // Bumped by every change, so a read that raced the change is not kept as current.
+  const versions = new Map<string, number>();
+  const saved = new Map<string, number>();
+  const failedAt = new Map<string, number>();
+
+  async function lookUp(threadId: string): Promise<Facts> {
+    const before = heard.get(threadId) ?? 0;
+    const thread = await bb.sdk.threads.get({ threadId });
+    if ((heard.get(threadId) ?? 0) === before) remember(statuses, threadId, thread.status);
+    if (thread.providerId !== "pi" || thread.environmentId === null) return { at: now(), hostId: null, sessionIds: [], stems: new Set() };
+    const { hostId } = await bb.sdk.environments.get({ environmentId: thread.environmentId });
+    const rows = await bb.sdk.threads.events.list({ threadId, types: ["thread/identity"] });
+    const identities = rows.flatMap((row) => {
+      const id = (row.data as { providerThreadId?: unknown } | null)?.providerThreadId;
+      return typeof id === "string" && id !== "" ? [id] : [];
+    });
+    // The thread id too, for a session named after the thread rather than an identity.
+    const sessionIds = [...new Set([...identities, threadId])].slice(-SESSIONS_MAX);
+    return { at: now(), hostId, sessionIds, stems: new Set(sessionIds.map(sessionStem)) };
+  }
+
+  async function factsOf(threadId: string): Promise<Facts> {
+    const held = facts.get(threadId);
+    if (held && now() - held.at < FACTS_TTL_MS) return held;
+    let found: Facts;
+    try {
+      found = await lookUp(threadId);
+    } catch (err) {
+      bb.log.warn(`looking up thread ${threadId} failed, so Burn reads no session log for it: ${message(err)}`);
+      found = { at: now(), hostId: null, sessionIds: [], stems: new Set() };
+    }
+    remember(facts, threadId, found);
+    return found;
+  }
+
+  function invalidate(threadId: string): void {
+    reports.delete(threadId);
+    remember(versions, threadId, (versions.get(threadId) ?? 0) + 1);
+  }
+
+  const fresh = (threadId: string): boolean => {
+    const held = reports.get(threadId);
+    return held !== undefined && now() - held.checkedAt < REPORT_TTL_MS;
+  };
+  const hostDown = (hostId: string): boolean => now() - (failedAt.get(hostId) ?? Number.NEGATIVE_INFINITY) < HOST_RETRY_MS;
+
+  async function save(threadId: string, got: LogReport): Promise<void> {
+    if (saved.get(threadId) === got.at) return;
+    try {
+      await bb.storage.kv.set(logKey(threadId), got);
+      remember(saved, threadId, got.at);
+    } catch (err) {
+      bb.log.warn(`saving the log report of ${threadId} failed: ${message(err)}`);
+    }
+  }
+
+  async function lastKept(threadId: string): Promise<LogReport | null> {
+    const raw = await bb.storage.kv.get<unknown>(logKey(threadId));
+    if (raw === undefined) return null;
+    const parsed = logSchema.safeParse(raw);
+    if (parsed.success) return parsed.data;
+    await bb.storage.kv.delete(logKey(threadId));
+    return null;
+  }
+
+  async function ask(hostId: string, threadIds: string[], answers: Map<string, LogReport | null>): Promise<void> {
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    for (let start = 0; start < threadIds.length; start += HOST_BATCH) {
+      const batch = threadIds.slice(start, start + HOST_BATCH);
+      const seen = new Map(batch.map((id) => [id, versions.get(id) ?? 0]));
+      const checkedAt = now();
+      let answer: Awaited<ReturnType<typeof host.call<"reports">>>;
+      try {
+        answer = await host.call(
+          "reports",
+          { harness: "pi", timeZone, threads: batch.map((threadId) => ({ threadId, sessionIds: facts.get(threadId)?.sessionIds ?? [threadId] })) },
+          { hostId, timeoutMs: HOST_TIMEOUT_MS },
+        );
+      } catch (err) {
+        failedAt.set(hostId, now());
+        bb.log.warn(`reading pi session logs on ${hostId} failed, so Burn shows the last figures it read there: ${message(err)}`);
+        return;
+      }
+      failedAt.delete(hostId);
+      for (const { threadId, report, at } of answer.reports) {
+        const got = report !== null && at !== null ? { report, at } : null;
+        answers.set(threadId, got);
+        if ((versions.get(threadId) ?? 0) === seen.get(threadId)) remember(reports, threadId, { got, checkedAt });
+        if (got) await save(threadId, got);
+      }
+    }
+  }
+
+  host.experimental_onSignal("changed", ({ hostId, payload }) => {
+    const changed = new Set(payload.sessionIds);
+    const hit: string[] = [];
+    for (const [threadId, f] of facts) {
+      if (f.hostId === hostId && (payload.all || [...f.stems].some((stem) => changed.has(stem)))) hit.push(threadId);
+    }
+    for (const threadId of hit) invalidate(threadId);
+    if (hit.length > 0) opts.onChange(hit);
+  });
+
+  host.experimental_onWorkerExit(({ hostId }) => {
+    for (const [threadId, f] of facts) if (f.hostId === hostId) invalidate(threadId);
+  });
+
+  function hear(thread: { id: string; status: string }): void {
+    remember(heard, thread.id, (heard.get(thread.id) ?? 0) + 1);
+    remember(statuses, thread.id, thread.status);
+  }
+
+  bb.events.on("thread.active", ({ thread }) => {
+    if (thread.providerId !== "pi") return;
+    // A thread that just started may have a pi session bb had not named yet.
+    facts.delete(thread.id);
+    hear(thread);
+    opts.onChange([thread.id]);
+  });
+  for (const name of ["thread.idle", "thread.failed"] as const) {
+    bb.events.on(name, ({ thread }) => {
+      if (thread.providerId !== "pi") return;
+      hear(thread);
+      opts.onChange([thread.id]);
+    });
+  }
+
+  return {
+    async reportsOf(threadIds) {
+      const ids = [...new Set(threadIds)];
+      const answers = new Map<string, LogReport | null>();
+      const wanted = new Map<string, string[]>();
+      await Promise.all(
+        ids.map(async (threadId) => {
+          if (fresh(threadId)) return;
+          const { hostId } = await factsOf(threadId);
+          if (hostId === null || hostDown(hostId)) return;
+          wanted.set(hostId, [...(wanted.get(hostId) ?? []), threadId]);
+        }),
+      );
+      await Promise.all([...wanted].map(([hostId, batch]) => ask(hostId, batch, answers)));
+      const out = new Map<string, LogReport>();
+      for (const threadId of ids) {
+        const got = answers.has(threadId) ? answers.get(threadId) : fresh(threadId) ? reports.get(threadId)?.got : null;
+        const best = got ?? (await lastKept(threadId));
+        if (best) out.set(threadId, best);
+      }
+      return out;
+    },
+    async running(threadId) {
+      await factsOf(threadId);
+      return statuses.get(threadId) === "active";
+    },
+    forget(threadId) {
+      for (const map of [facts, statuses, heard, reports, versions, saved]) map.delete(threadId);
+    },
+  };
+}

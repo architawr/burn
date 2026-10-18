@@ -74,6 +74,7 @@ describe("repository layout", () => {
       ...manifest.pi.extensions.map((entry: string) => [entry, "extensions/pi"] as [string, string]),
       [manifest.bb.server, "extensions/bb"],
       [manifest.bb.app, "extensions/bb"],
+      [manifest.bb.host, "extensions/bb"],
     ];
     for (const [entry, dir] of entries) {
       const path = join(ROOT, entry);

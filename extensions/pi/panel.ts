@@ -50,7 +50,7 @@ export class BurnPanel {
   private view: number;
   private readonly scroll = new Map<PanelView, number>();
   private readonly turns: TurnsState = { selected: null, expanded: false, top: 0 };
-  private readonly historyState: HistoryState = { range: 0, selected: null, top: 0 };
+  private readonly historyState: HistoryState = { range: 0, utc: false, selected: null, top: 0 };
   private historyData: HistoryData | null = null;
   private flash: string | null = null;
   private flashTimer: ReturnType<typeof setTimeout> | null = null;
@@ -138,6 +138,7 @@ export class BurnPanel {
     } else if (view === "history") {
       if (move !== 0) this.moveSession(move);
       else if (isKey(data, "[", "]")) this.historyState.range = (this.historyState.range + (isKey(data, "]") ? 1 : RANGES.length - 1)) % RANGES.length;
+      else if (isKey(data, "u")) this.historyState.utc = !this.historyState.utc;
       else if (isKey(data, Key.enter)) return this.resume();
       else return;
     } else if (move !== 0) {
@@ -162,7 +163,7 @@ export class BurnPanel {
       case "turns":
         return ["↑↓ select", this.turns.expanded ? "enter collapse" : "enter expand", "tab views", "c copy", "esc close"];
       case "history":
-        return ["[ ] range", "↑↓ select", "enter resume", "tab views", "esc close"];
+        return ["[ ] range", this.historyState.utc ? "u local" : "u UTC", "↑↓ select", "enter resume", "tab views", "esc close"];
       default:
         return ["tab views", ...(scrollable ? ["↑↓ scroll"] : []), "1-4 jump", "c copy", "esc close"];
     }
@@ -203,14 +204,14 @@ export class BurnPanel {
   }
 
   private moveSession(move: number): void {
-    const totals = historyTotals(this.historySource(), this.report, this.historyState.range);
+    const totals = historyTotals(this.historySource(), this.report, this.historyState.range, this.historyState.utc);
     if (totals.sessions.length === 0) return;
     const index = Math.max(0, Math.min(totals.sessions.length - 1, historyIndex(totals, this.historyState.selected) + move));
     this.historyState.selected = totals.sessions[index]!.session.path;
   }
 
   private resume(): void {
-    const totals = historyTotals(this.historySource(), this.report, this.historyState.range);
+    const totals = historyTotals(this.historySource(), this.report, this.historyState.range, this.historyState.utc);
     const row = totals.sessions[historyIndex(totals, this.historyState.selected)];
     if (!row) return;
     if (row.session.path === this.opts.history?.currentPath) return this.flashHint("This is the open session");

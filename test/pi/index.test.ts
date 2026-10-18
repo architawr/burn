@@ -29,7 +29,7 @@ afterEach(() => {
 
 const writeSettings = (value: unknown) => writeFileSync(join(agentDir, "burn.json"), typeof value === "string" ? value : JSON.stringify(value));
 
-function setup(opts: { entries?: unknown[]; mode?: string; hasUI?: boolean; bbPolicy?: BudgetPolicy | null } = {}) {
+function setup(opts: { entries?: unknown[]; header?: unknown; mode?: string; hasUI?: boolean; bbPolicy?: BudgetPolicy | null } = {}) {
   const handlers = new Map<string, Handler>();
   const commands = new Map<string, Command>();
   const entries: unknown[] = opts.entries ?? [user(), assistant(1.5)];
@@ -67,7 +67,12 @@ function setup(opts: { entries?: unknown[]; mode?: string; hasUI?: boolean; bbPo
       custom,
       theme: { ...PLAIN, fg: (_c: string, t: string) => t, getBgAnsi: () => "\x1b[48;2;1;2;3m" },
     },
-    sessionManager: { getEntries: () => entries, getSessionFile: () => "/s/current", getSessionName: () => "burn work" },
+    sessionManager: {
+      getEntries: () => entries,
+      getHeader: () => opts.header ?? null,
+      getSessionFile: () => "/s/current",
+      getSessionName: () => "burn work",
+    },
     getContextUsage: () => ({ tokens: 10, contextWindow: 100, percent: 10 }),
     abort,
     switchSession,
@@ -105,6 +110,24 @@ const notes = (notify: ReturnType<typeof vi.fn>) => notify.mock.calls.map((c) =>
 describe("burn pi extension", () => {
   it("exports a ready extension factory", () => {
     expect(typeof burn).toBe("function");
+  });
+
+  it("counts a forked session only from its creation, not the parent's copied calls", () => {
+    const stamped = (iso: string, entry: { timestamp: string }) => ({ ...entry, timestamp: iso });
+    const header = { type: "session", version: 3, id: "s", timestamp: "2026-10-18T12:00:00.000Z", cwd: "/w", parentSession: "/s/parent.jsonl" };
+    const entries = [
+      stamped("2026-10-18T10:00:00.000Z", user("parent")),
+      stamped("2026-10-18T10:00:01.000Z", assistant(5)),
+      stamped("2026-10-18T12:00:01.000Z", user("side chat")),
+      stamped("2026-10-18T12:00:02.000Z", assistant(1.25)),
+    ];
+    const t = setup({ entries, header });
+    t.fire("turn_end");
+    expect(t.lastPill()).toContain("$1.25");
+    expect(t.sent.at(-1)?.cost.total).toBeCloseTo(1.25);
+    const whole = setup({ entries, header: { ...header, parentSession: undefined } });
+    whole.fire("turn_end");
+    expect(whole.sent.at(-1)?.cost.total).toBeCloseTo(6.25);
   });
 
   it("sets the pill after a turn and reads $0.00 with no calls", () => {

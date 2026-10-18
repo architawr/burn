@@ -32,7 +32,7 @@ export interface TurnRow {
   models: string[];
 }
 
-/** Spend on one local calendar day, YYYY-MM-DD. */
+/** Spend on one calendar day, YYYY-MM-DD. */
 export interface DayRow {
   day: string;
   cost: number;
@@ -56,7 +56,10 @@ export interface UsageReport {
   /** Every turn so far, including those no longer in `turns`. */
   turnCount: number;
   turns: TurnRow[];
+  /** Local calendar days: the process zone's, or `opts.timeZone`'s. */
   days: DayRow[];
+  /** The same spend by UTC calendar day. */
+  utcDays: DayRow[];
   /** Set by the pi extension: true while pi is working on a prompt. */
   running: boolean;
   /** Set by the pi extension: the thread budget pi itself knows of (`/burn budget`), in dollars. */
@@ -158,12 +161,106 @@ export function promptExcerpt(content: string | Block[] | undefined): string {
   return flat.length > PROMPT_MAX ? `${flat.slice(0, PROMPT_MAX - 1)}…` : flat;
 }
 
-/** The local calendar day of a timestamp, YYYY-MM-DD. */
-export function dayKey(ms: number): string {
+const dayFormats = new Map<string, Intl.DateTimeFormat>();
+
+/** The calendar day of a timestamp, YYYY-MM-DD, in `timeZone` (an IANA zone such as "UTC") or else the process zone. */
+export function dayKey(ms: number, timeZone?: string): string {
+  if (timeZone !== undefined) {
+    let format = dayFormats.get(timeZone);
+    if (!format) {
+      format = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" });
+      dayFormats.set(timeZone, format);
+    }
+    return format.format(ms);
+  }
   const d = new Date(ms);
   const pad = (n: number): string => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/**
+ * When a forked session (a side chat, `/fork`) was created: its header names a
+ * parent session. Its log starts with a copy of the parent's entries, which keep
+ * their older timestamps, so only entries from this time on are its own.
+ */
+export function forkedAt(header: unknown): number | null {
+  if (!isRecord(header) || typeof header.parentSession !== "string" || header.parentSession === "") return null;
+  const at = typeof header.timestamp === "string" ? Date.parse(header.timestamp) : Number.NaN;
+  return Number.isFinite(at) ? at : null;
+}
+
+function slimUsage(usage: unknown): Usage | undefined {
+  if (!isRecord(usage) || !isRecord(usage.cost)) return undefined;
+  const { cost } = usage;
+  return {
+    input: usage.input as number,
+    output: usage.output as number,
+    cacheRead: usage.cacheRead as number,
+    cacheWrite: usage.cacheWrite as number,
+    reasoning: usage.reasoning as number | undefined,
+    cost: {
+      input: cost.input as number,
+      output: cost.output as number,
+      cacheRead: cost.cacheRead as number,
+      cacheWrite: cost.cacheWrite as number,
+      total: cost.total as number,
+    },
+  };
+}
+
+/**
+ * A session log entry cut down to what buildReport reads, so a reader that keeps
+ * many logs in memory holds kilobytes rather than every prompt and tool output.
+ * null for the session header and for anything that is not an entry.
+ */
+export function slimEntry(entry: unknown): EntryLike | null {
+  if (!isRecord(entry) || typeof entry.type !== "string" || typeof entry.timestamp !== "string" || entry.type === "session") return null;
+  const slim: Loose & EntryLike = { type: entry.type, timestamp: entry.timestamp };
+  const usage = slimUsage(entry.usage);
+  if (usage) slim.usage = usage;
+  if (entry.type === "usage") {
+    slim.provider = entry.provider as string;
+    slim.model = entry.model as string;
+  }
+  if (entry.type === "message" && isRecord(entry.message)) {
+    const { role, provider, model, responseModel, content } = entry.message as NonNullable<Loose["message"]>;
+    const message: NonNullable<Loose["message"]> = { role };
+    if (provider !== undefined) message.provider = provider;
+    if (model !== undefined) message.model = model;
+    if (responseModel !== undefined) message.responseModel = responseModel;
+    const messageUsage = slimUsage(entry.message.usage);
+    if (messageUsage) message.usage = messageUsage;
+    if (role === "user") message.content = promptExcerpt(content);
+    else if (Array.isArray(content)) {
+      const calls = content.filter((b) => b?.type === "toolCall" && typeof b.name === "string").map((b) => ({ type: "toolCall", name: b.name }));
+      if (calls.length > 0) message.content = calls;
+    }
+    slim.message = message;
+  }
+  return slim;
+}
+
+interface DayDraft {
+  cost: number;
+  calls: number;
+  models: Map<string, number>;
+}
+
+function addDay(days: Map<string, DayDraft>, day: string, key: string, cost: number, call: boolean): void {
+  const draft = days.get(day) ?? { cost: 0, calls: 0, models: new Map<string, number>() };
+  draft.cost += cost;
+  draft.models.set(key, (draft.models.get(key) ?? 0) + cost);
+  if (call) draft.calls++;
+  days.set(day, draft);
+}
+
+const dayRows = (days: Map<string, DayDraft>): DayRow[] =>
+  [...days.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .slice(-DAYS_MAX)
+    .map(([day, d]) => ({ day, cost: d.cost, calls: d.calls, models: foldDayModels(d.models) }));
 
 function foldModels(rows: Map<string, Row>): Row[] {
   const sorted = [...rows.values()].filter((r) => r.cost > 0 || r.tokens > 0).sort((a, b) => b.cost - a.cost);
@@ -219,25 +316,43 @@ function countTools(turn: TurnDraft, content: string | Block[] | undefined): voi
   }
 }
 
-export function buildReport(entries: readonly EntryLike[], context: UsageReport["context"] | undefined): UsageReport {
+export interface ReportOptions {
+  /** Count only entries from this time on: a forked session's `forkedAt`. */
+  countFrom?: number | null;
+  /** The IANA zone whose calendar days `days` uses; the process zone when undefined. */
+  timeZone?: string;
+}
+
+export function buildReport(
+  entries: readonly EntryLike[],
+  context: UsageReport["context"] | undefined,
+  opts: ReportOptions = {},
+): UsageReport {
   const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
   const cost: CostParts = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
   const models = new Map<string, Row>();
   const series: UsageReport["series"] = [];
   const turns: TurnRow[] = [];
-  const days = new Map<string, { cost: number; calls: number; models: Map<string, number> }>();
+  const days = new Map<string, DayDraft>();
+  const utcDays = new Map<string, DayDraft>();
+  const countFrom = opts.countFrom ?? null;
   let turn: TurnDraft | null = null;
   let turnCount = 0;
   let calls = 0;
   let lastTurnCost = 0;
+  let started = false;
   let startedAt = 0;
   let updatedAt = 0;
 
-  for (let index = 0; index < entries.length; index++) {
-    const entry = entries[index] as Loose & EntryLike;
+  for (const item of entries) {
+    const entry = item as Loose & EntryLike;
     const parsed = Date.parse(entry.timestamp);
+    if (countFrom !== null && parsed < countFrom) continue;
     const at = Number.isFinite(parsed) ? parsed : updatedAt;
-    if (index === 0) startedAt = at;
+    if (!started) {
+      started = true;
+      startedAt = at;
+    }
     updatedAt = at;
 
     if (entry.type === "message" && entry.message?.role === "user") {
@@ -276,15 +391,12 @@ export function buildReport(entries: readonly EntryLike[], context: UsageReport[
     current.tokens.cacheRead += usage.cacheRead;
     current.tokens.cacheWrite += usage.cacheWrite;
 
-    const day = days.get(dayKey(at)) ?? { cost: 0, calls: 0, models: new Map<string, number>() };
-    day.cost += usage.cost.total;
-    day.models.set(key, (day.models.get(key) ?? 0) + usage.cost.total);
-    days.set(dayKey(at), day);
+    addDay(days, dayKey(at, opts.timeZone), key, usage.cost.total, call);
+    addDay(utcDays, dayKey(at, "UTC"), key, usage.cost.total, call);
 
     if (call) {
       row.calls++;
       calls++;
-      day.calls++;
       series.push({ at, cost: usage.cost.total, tokens: tokensOf(usage), turn: current.n });
       current.calls++;
       current.callCosts.push(usage.cost.total);
@@ -296,10 +408,6 @@ export function buildReport(entries: readonly EntryLike[], context: UsageReport[
   if (turn) turns.push(finishTurn(turn));
 
   const prompt = tokens.input + tokens.cacheRead + tokens.cacheWrite;
-  const dayRows = [...days.entries()]
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .slice(-DAYS_MAX)
-    .map(([key, d]) => ({ day: key, cost: d.cost, calls: d.calls, models: foldDayModels(d.models) }));
   return {
     version: REPORT_VERSION,
     startedAt,
@@ -314,7 +422,8 @@ export function buildReport(entries: readonly EntryLike[], context: UsageReport[
     series: series.slice(-SERIES_MAX),
     turnCount,
     turns: turns.slice(-TURNS_MAX),
-    days: dayRows,
+    days: dayRows(days),
+    utcDays: dayRows(utcDays),
     running: false,
     budget: null,
     stoppedAt: null,
