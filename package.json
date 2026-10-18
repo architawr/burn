@@ -1,0 +1,86 @@
+{
+  "name": "pi-burn",
+  "version": "0.1.0",
+  "description": "See what each thread has cost: a pill in pi's footer and in bb's prompt-box footer, with a detailed view behind each.",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "bb-plugin",
+    "cost",
+    "usage"
+  ],
+  "license": "MIT",
+  "engines": {
+    "bb": ">=0.46",
+    "bbPluginSdk": ">=0.6.49"
+  },
+  "bb": {
+    "name": "Burn",
+    "description": "See what each thread has cost, in the footer.",
+    "branding": {
+      "icon": "./assets/icon.svg"
+    },
+    "server": "./extensions/bb/server.ts",
+    "app": "./extensions/bb/app.tsx",
+    "skills": []
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/pi/index.ts"
+    ]
+  },
+  "files": [
+    "src/",
+    "extensions/pi/",
+    "README.md",
+    "LICENSE.md"
+  ],
+  "scripts": {
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "1.3.0",
+    "@earendil-works/pi-coding-agent": "1.3.0",
+    "@earendil-works/pi-tui": "1.3.0",
+    "@get-bb/plugin-sdk": "0.6.49",
+    "@radix-ui/react-tooltip": "^1.2.12",
+    "@testing-library/react": "^16.3.2",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "better-sqlite3": "^12.0.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "cron-parser": "^5.10.2",
+    "hono": "^4.11.9",
+    "jsdom": "^29.1.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tailwind-merge": "^3.4.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.5"
+  }
+}
