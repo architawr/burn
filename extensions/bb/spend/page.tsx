@@ -7,20 +7,21 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { budgetState } from "../../../src/budget.js";
-import { formatAmount, formatBudget, formatUsd, modelName, providerName } from "../../../src/format.js";
+import { formatAmount, formatBudget, formatTokenCount, formatUsd, modelName } from "../../../src/format.js";
 import { cn } from "../lib/utils.js";
-import type { SpendOutput, SpendRange, SpendZone, spendMethods } from "./contract.js";
+import type { SpendMetric, SpendOutput, SpendPanel, SpendRange, SpendZone, spendMethods } from "./contract.js";
 import { dayDate, RANGE_DAYS } from "./days.js";
+import { HideButton, PANELS, PanelLabel, type Panels, PanelsMenu, usePanels } from "./panels.js";
+import { Activity, CallTime, Change, formatMetric, Kpi, METRIC_WORDS, ModelTable, noneText, RANGES, rangeInfo, TokenMix, UsageCards } from "./usage.js";
 
 /** A usage signal arrives per report from every running thread, so refetches wait for a quiet moment. */
 export const REFETCH_DEBOUNCE_MS = 1000;
 
-const RANGES: { range: SpendRange; label: string; column: string; previous: string }[] = [
-  { range: "today", label: "Today", column: "Today", previous: "yesterday" },
-  { range: "7d", label: "7 days", column: "Last 7 days", previous: "previous 7 days" },
-  { range: "30d", label: "30 days", column: "Last 30 days", previous: "previous 30 days" },
+const METRICS: { metric: SpendMetric; label: string }[] = [
+  { metric: "cost", label: "Cost" },
+  { metric: "tokens", label: "Tokens" },
+  { metric: "calls", label: "Calls" },
 ];
-const rangeInfo = (range: SpendRange) => RANGES.find((r) => r.range === range) ?? (RANGES[1] as (typeof RANGES)[number]);
 
 const ZONES: { zone: SpendZone; label: string }[] = [
   { zone: "local", label: "Local" },
@@ -58,6 +59,7 @@ const CHART = [
 ];
 const chartColor = (i: number): CSSProperties => ({ color: CHART[i % CHART.length] });
 const PROJECT_COLOR = chartColor(4);
+const HARNESS_COLOR = chartColor(3);
 const RUNNING_COLOR: CSSProperties = { color: "var(--chart-1, var(--timeline-accent))" };
 
 const EMPTY_TEXT = "No thread has spent anything yet. Burn counts a thread from its first model call.";
@@ -71,7 +73,7 @@ interface SpendState {
 }
 
 /** Spend for the range, project and days, refetched (debounced) on every usage signal and after a reconnect. */
-function useSpend(range: SpendRange, projectId: string | null, tz: SpendZone): SpendState & { retry: () => void } {
+function useSpend(range: SpendRange, projectId: string | null, tz: SpendZone, metric: SpendMetric): SpendState & { retry: () => void } {
   const rpc = useRpc<typeof spendMethods>();
   const connection = useRealtimeConnectionState();
   const [state, setState] = useState<SpendState>({ data: null, error: null, loading: true });
@@ -82,7 +84,7 @@ function useSpend(range: SpendRange, projectId: string | null, tz: SpendZone): S
   const refetch = useCallback(() => {
     const asked = ++latest.current;
     setState((s) => ({ ...s, loading: true }));
-    rpc.call("spend", { range, projectId, tz }).then(
+    rpc.call("spend", { range, projectId, tz, metric }).then(
       (data) => {
         if (asked === latest.current) setState({ data, error: null, loading: false });
       },
@@ -90,7 +92,7 @@ function useSpend(range: SpendRange, projectId: string | null, tz: SpendZone): S
         if (asked === latest.current) setState((s) => ({ ...s, error: errorText(cause), loading: false }));
       },
     );
-  }, [rpc, range, projectId, tz]);
+  }, [rpc, range, projectId, tz, metric]);
 
   useEffect(() => {
     refetch();
@@ -117,15 +119,6 @@ function useSpend(range: SpendRange, projectId: string | null, tz: SpendZone): S
   }, [connection, refetch]);
 
   return { ...state, retry: refetch };
-}
-
-function Label({ children, aside }: { children: ReactNode; aside?: ReactNode }) {
-  return (
-    <div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-      <h2 className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">{children}</h2>
-      {aside}
-    </div>
-  );
 }
 
 function Segments<T extends string>({
@@ -160,6 +153,8 @@ function Segments<T extends string>({
 }
 
 function Toolbar({
+  metric,
+  onMetric,
   range,
   onRange,
   zone,
@@ -167,7 +162,10 @@ function Toolbar({
   projectId,
   onProject,
   options,
+  panels,
 }: {
+  metric: SpendMetric;
+  onMetric: (metric: SpendMetric) => void;
   range: SpendRange;
   onRange: (range: SpendRange) => void;
   zone: SpendZone;
@@ -175,9 +173,14 @@ function Toolbar({
   projectId: string | null;
   onProject: (projectId: string | null) => void;
   options: SpendOutput["projectOptions"];
+  panels: Panels;
 }) {
   return (
-    <div className="flex flex-wrap items-center justify-end gap-2">
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-xs text-muted-foreground">Show</span>
+      <Segments label="Show" items={METRICS.map((m) => ({ value: m.metric, label: m.label }))} value={metric} onChange={onMetric} />
+      <span className="flex-1" />
+      <PanelsMenu panels={panels} />
       <select
         aria-label="Project"
         value={projectId ?? ""}
@@ -197,44 +200,19 @@ function Toolbar({
   );
 }
 
-function Kpi({ label, value, sub, hint }: { label: string; value: string; sub: ReactNode; hint?: string }) {
-  return (
-    <div className="min-w-0 rounded-lg border border-border bg-surface-raised p-3" title={hint}>
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="mt-0.5 text-xl font-semibold tracking-tight tabular-nums">{value}</div>
-      <div className="mt-0.5 truncate text-xs text-muted-foreground">{sub}</div>
-    </div>
-  );
-}
-
-function Change({ total, previous, range }: { total: number; previous: number; range: SpendRange }) {
-  const { previous: than } = rangeInfo(range);
-  if (previous === 0) return <>no spend {range === "today" ? than : `in the ${than}`}</>;
-  const pct = Math.round(((total - previous) / previous) * 100);
-  if (pct === 0) return <>same as {than}</>;
-  return (
-    <>
-      <span className={pct > 0 ? "text-warning-text" : undefined}>
-        {pct > 0 ? "▲" : "▼"} {Math.abs(pct)}%
-      </span>{" "}
-      vs {than}
-    </>
-  );
-}
-
 function Kpis({ data }: { data: SpendOutput }) {
+  const threads = [
+    data.runningCount > 0 ? `${data.runningCount} running` : null,
+    data.overBudgetCount > 0 ? `${data.overBudgetCount} over budget` : "none over budget",
+  ].filter((s): s is string => s !== null);
   return (
     <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
       <Kpi
         label={`Spent${zoneSuffix(data.tz)}`}
         value={formatAmount(data.total, data.estimated)}
-        sub={<Change total={data.total} previous={data.previousTotal} range={data.range} />}
+        sub={<Change now={data.total} before={data.previousTotal} than={rangeInfo(data.range).previous} none={noneText("no spend", data.range)} />}
       />
-      <Kpi
-        label="Threads"
-        value={String(data.threadCount)}
-        sub={data.overBudgetCount > 0 ? `${data.overBudgetCount} over budget` : "none over budget"}
-      />
+      <Kpi label="Threads" value={String(data.threadCount)} sub={threads.join(" · ")} />
       <Kpi
         label="Median thread"
         value={data.medianThreadCost === null ? "—" : formatUsd(data.medianThreadCost)}
@@ -244,7 +222,7 @@ function Kpis({ data }: { data: SpendOutput }) {
         label="Cache hit rate"
         value={data.cacheHitPct === null ? "—" : `${Math.round(data.cacheHitPct)}%`}
         sub="of prompt tokens"
-        hint="Cache reads as a share of prompt tokens, from the session totals of the threads in range"
+        hint="Cache reads as a share of prompt tokens, from the chosen days"
       />
     </div>
   );
@@ -273,7 +251,11 @@ function scale(peak: number): { max: number; ticks: number[] } {
   return { max, ticks: Array.from({ length: Math.round(max / step) + 1 }, (_, i) => i * step) };
 }
 
-const axisLabel = (v: number): string => (v >= 1 || v === 0 ? formatBudget(Math.round(v * 100) / 100) : `$${v.toFixed(2)}`);
+function axisLabel(v: number, metric: SpendMetric): string {
+  if (metric === "tokens") return formatTokenCount(v);
+  if (metric === "calls") return v.toLocaleString("en-US");
+  return v >= 1 || v === 0 ? formatBudget(Math.round(v * 100) / 100) : `$${v.toFixed(2)}`;
+}
 const shortDay = (day: string, range: SpendRange): string =>
   range === "7d"
     ? dayDate(day).toLocaleDateString("en-US", { weekday: "short" })
@@ -281,8 +263,11 @@ const shortDay = (day: string, range: SpendRange): string =>
 const longDay = (day: string): string =>
   dayDate(day).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 
+/** The day's figure in the page's metric: "$23.60", "1.2M" or "312". */
+const valueOf = (row: { cost: number; tokens: number; calls: number }, data: SpendOutput): string => formatMetric(row[data.metric], data.metric, data.estimated);
+
 /** Beside the hovered day, on the side with more room, so it never covers that day's bar. */
-function DayTip({ day, models, index, count }: { day: SpendOutput["days"][number]; models: SpendOutput["models"]; index: number; count: number }) {
+function DayTip({ day, data, index, count }: { day: SpendOutput["days"][number]; data: SpendOutput; index: number; count: number }) {
   const right = index < count / 2;
   const edge = ((right ? index + 1 : index) / count) * 100;
   return (
@@ -292,29 +277,38 @@ function DayTip({ day, models, index, count }: { day: SpendOutput["days"][number
       style={{ left: `${edge}%`, transform: right ? "translateX(6px)" : "translateX(calc(-100% - 6px))" }}
     >
       <div className="mb-1 font-semibold whitespace-nowrap">
-        {longDay(day.day)} · {formatUsd(day.cost)}
+        {longDay(day.day)} · {valueOf(day, data)}
       </div>
-      {day.models.length === 0 ? <div className="text-muted-foreground">No spend</div> : null}
+      {day.models.length === 0 ? <div className="text-muted-foreground">{data.metric === "cost" ? "No spend" : "No use"}</div> : null}
       {day.models.map((m) => {
-        const i = models.findIndex((x) => x.key === m.key);
+        const i = data.models.findIndex((x) => x.key === m.key);
         return (
           <div key={m.key} className="flex items-center justify-between gap-3 tabular-nums">
             <span className="flex min-w-0 items-center gap-1.5">
               <span aria-hidden className="size-2 shrink-0 rounded-[2px] bg-current" style={chartColor(i)} />
               <span className="truncate">{modelName(m.key)}</span>
             </span>
-            <span>{formatUsd(m.cost)}</span>
+            <span>{valueOf(m, data)}</span>
           </div>
         );
       })}
+      {data.metric !== "calls" ? (
+        <div className="mt-1 flex justify-between gap-3 text-muted-foreground tabular-nums">
+          <span>Calls</span>
+          <span>{day.calls.toLocaleString("en-US")}</span>
+        </div>
+      ) : null}
     </div>
   );
 }
 
+const LIST_LABELS: Record<SpendMetric, string> = { cost: "Spend per day", tokens: "Tokens per day", calls: "Calls per day" };
+
 function DayChart({ data }: { data: SpendOutput }) {
-  const { days, models, dailyBudget, range } = data;
+  const { days, models, range, metric } = data;
+  const dailyBudget = metric === "cost" ? data.dailyBudget : null;
   const [hover, setHover] = useState<number | null>(null);
-  const { max, ticks } = scale(Math.max(dailyBudget ?? 0, ...days.map((d) => d.cost)));
+  const { max, ticks } = scale(Math.max(dailyBudget ?? 0, ...days.map((d) => d[metric])));
   const pct = (v: number): number => Math.min(100, (v / max) * 100);
   const hovered = hover === null ? undefined : days[hover];
   const labelled = (i: number): boolean => range === "7d" || (days.length - 1 - i) % 5 === 0;
@@ -324,7 +318,7 @@ function DayChart({ data }: { data: SpendOutput }) {
         {ticks.map((t) => (
           <div key={t} aria-hidden className="absolute inset-x-0" style={{ bottom: `${pct(t)}%` }}>
             <div className={cn("border-t border-border", t > 0 && "border-dashed")} />
-            <span className="absolute right-full mr-2 translate-y-[-50%] text-[10px] text-muted-foreground tabular-nums">{axisLabel(t)}</span>
+            <span className="absolute right-full mr-2 translate-y-[-50%] text-[10px] text-muted-foreground tabular-nums">{axisLabel(t, metric)}</span>
           </div>
         ))}
         {dailyBudget !== null ? (
@@ -333,13 +327,13 @@ function DayChart({ data }: { data: SpendOutput }) {
             <span className="absolute right-0 bottom-0.5 rounded-sm bg-background px-1 text-[10px] text-warning-text">Daily budget {formatBudget(dailyBudget)}</span>
           </div>
         ) : null}
-        <div className="absolute inset-0 flex" role="list" aria-label="Spend per day">
+        <div className="absolute inset-0 flex" role="list" aria-label={LIST_LABELS[metric]}>
           {days.map((d, i) => (
             <div
               key={d.day}
               role="listitem"
               tabIndex={0}
-              aria-label={`${longDay(d.day)}: ${formatUsd(d.cost)}`}
+              aria-label={`${longDay(d.day)}: ${valueOf(d, data)}`}
               onMouseEnter={() => setHover(i)}
               onFocus={() => setHover(i)}
               onBlur={() => setHover(null)}
@@ -353,16 +347,14 @@ function DayChart({ data }: { data: SpendOutput }) {
                   <div
                     key={m.key}
                     className="w-full shrink-0 rounded-[2px] bg-current"
-                    style={{ ...chartColor(models.findIndex((x) => x.key === m.key)), height: `${pct(m.cost)}%` }}
+                    style={{ ...chartColor(models.findIndex((x) => x.key === m.key)), height: `${pct(m[metric])}%` }}
                   />
                 ))}
               </div>
             </div>
           ))}
         </div>
-        {hovered !== undefined && hover !== null ? (
-          <DayTip day={hovered} models={models} index={hover} count={days.length} />
-        ) : null}
+        {hovered !== undefined && hover !== null ? <DayTip day={hovered} data={data} index={hover} count={days.length} /> : null}
       </div>
       <div aria-hidden className="mt-1 flex text-[10.5px] text-muted-foreground">
         {days.map((d, i) => (
@@ -377,19 +369,22 @@ function DayChart({ data }: { data: SpendOutput }) {
 
 /** One day has no shape over time, so today reads as its split by model against the Daily budget. */
 function TodayBar({ data }: { data: SpendOutput }) {
-  const { models, dailyBudget, total } = data;
+  const { models, metric } = data;
+  const dailyBudget = metric === "cost" ? data.dailyBudget : null;
+  const total = metric === "cost" ? data.total : data[metric];
+  const label = formatMetric(total, metric, data.estimated);
   // Headroom past the larger of the two, so the budget mark never sits on the bar's rounded end.
   const span = Math.max(total, dailyBudget ?? 0) * 1.08 || 1;
   return (
     <div className="space-y-2">
       <div className="text-xs text-muted-foreground tabular-nums">
-        <span className="text-sm font-semibold text-foreground">{formatUsd(total)}</span> today
+        <span className="text-sm font-semibold text-foreground">{label}</span> today
         {dailyBudget !== null ? ` of the ${formatBudget(dailyBudget)} daily budget` : ""}
       </div>
       <div className="relative">
-        <div className="flex h-3 gap-px overflow-hidden rounded-full bg-muted" role="img" aria-label={`Today by model: ${formatUsd(total)}`}>
+        <div className="flex h-3 gap-px overflow-hidden rounded-full bg-muted" role="img" aria-label={`Today by model: ${label}`}>
           {models.map((m, i) => (
-            <div key={m.key} className="h-full bg-current" style={{ ...chartColor(i), width: `${(m.cost / span) * 100}%` }} />
+            <div key={m.key} className="h-full bg-current" style={{ ...chartColor(i), width: `${(m[metric] / span) * 100}%` }} />
           ))}
         </div>
         {dailyBudget !== null ? (
@@ -404,7 +399,9 @@ function TodayBar({ data }: { data: SpendOutput }) {
   );
 }
 
-function ThreadTable({ data }: { data: SpendOutput }) {
+const THREAD_TITLES: Record<SpendMetric, string> = { cost: "Costliest threads", tokens: "Most tokens", calls: "Most calls" };
+
+function ThreadTable({ data, hide }: { data: SpendOutput; hide: ReactNode }) {
   const navigate = useBbNavigate();
   return (
     <div className="overflow-x-auto rounded-lg border border-border">
@@ -412,10 +409,13 @@ function ThreadTable({ data }: { data: SpendOutput }) {
         <thead>
           <tr className="text-muted-foreground">
             <th scope="col" className="px-3 py-2 text-left font-medium">
-              Costliest threads
+              {THREAD_TITLES[data.metric]}
             </th>
             <th scope="col" className="px-2 py-2 text-right font-medium">
               Calls
+            </th>
+            <th scope="col" className="px-2 py-2 text-right font-medium">
+              Tokens
             </th>
             <th scope="col" className="px-2 py-2 text-right font-medium whitespace-nowrap">
               {rangeInfo(data.range).column}
@@ -423,16 +423,17 @@ function ThreadTable({ data }: { data: SpendOutput }) {
             <th scope="col" className="px-2 py-2 text-right font-medium">
               Total
             </th>
-            <th scope="col" className="w-0 px-3 py-2">
+            <th scope="col" className="w-0 px-3 py-2 text-right">
               <span className="sr-only">Status</span>
+              {hide}
             </th>
           </tr>
         </thead>
         <tbody>
           {data.threads.length === 0 ? (
             <tr className="border-t border-border">
-              <td colSpan={5} className="px-3 py-3 text-muted-foreground">
-                No thread spent anything in this period.
+              <td colSpan={6} className="px-3 py-3 text-muted-foreground">
+                {data.metric === "cost" ? "No thread spent anything in this period." : "No thread used anything in this period."}
               </td>
             </tr>
           ) : null}
@@ -441,6 +442,7 @@ function ThreadTable({ data }: { data: SpendOutput }) {
             const detail = [
               t.projectName,
               t.model,
+              t.harness === "pi" ? null : t.harness,
               t.childCount > 0 ? `${t.childCount} ${t.childCount === 1 ? "child thread" : "child threads"}` : null,
             ].filter((s): s is string => s !== null);
             return (
@@ -450,7 +452,7 @@ function ThreadTable({ data }: { data: SpendOutput }) {
                 onClick={() => navigate.toThread(t.threadId)}
                 className="cursor-pointer border-t border-border hover:bg-state-hover"
               >
-                <td className="max-w-0 px-3 py-2">
+                <td className="w-full max-w-0 px-3 py-2">
                   <button
                     type="button"
                     className="block max-w-full truncate rounded-sm text-left text-[13px] text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -459,7 +461,8 @@ function ThreadTable({ data }: { data: SpendOutput }) {
                   </button>
                   {detail.length > 0 ? <div className="truncate text-[11px] text-muted-foreground">{detail.join(" · ")}</div> : null}
                 </td>
-                <td className="px-2 py-2 text-right tabular-nums">{t.calls}</td>
+                <td className="px-2 py-2 text-right tabular-nums">{t.calls.toLocaleString("en-US")}</td>
+                <td className="px-2 py-2 text-right tabular-nums">{formatTokenCount(t.tokens)}</td>
                 <td className="px-2 py-2 text-right tabular-nums">{formatAmount(t.rangeCost, t.estimated)}</td>
                 <td className="px-2 py-2 text-right tabular-nums">{formatAmount(t.total, t.estimated)}</td>
                 <td className="px-3 py-2 text-right whitespace-nowrap">
@@ -485,12 +488,21 @@ function ThreadTable({ data }: { data: SpendOutput }) {
   );
 }
 
-function Bars({ label, rows }: { label: string; rows: { key: string; name: string; hint?: string; cost: number; color: CSSProperties }[] }) {
-  const peak = Math.max(0, ...rows.map((r) => r.cost)) || 1;
+interface BarRow {
+  key: string;
+  name: string;
+  hint?: string;
+  value: number;
+  label: string;
+  color: CSSProperties;
+}
+
+function Bars({ label, rows, metric, hide }: { label: string; rows: BarRow[]; metric: SpendMetric; hide: ReactNode }) {
+  const peak = Math.max(0, ...rows.map((r) => r.value)) || 1;
   return (
     <section aria-label={label}>
-      <Label>{label}</Label>
-      {rows.length === 0 ? <div className="text-xs text-muted-foreground">No spend in this period.</div> : null}
+      <PanelLabel hide={hide}>{label}</PanelLabel>
+      {rows.length === 0 ? <div className="text-xs text-muted-foreground">{metric === "cost" ? "No spend in this period." : "No use in this period."}</div> : null}
       <div className="grid grid-cols-[minmax(0,8rem)_1fr_auto] items-center gap-x-2 gap-y-1.5 text-xs">
         {rows.map((r) => (
           <div key={r.key} className="contents">
@@ -498,9 +510,9 @@ function Bars({ label, rows }: { label: string; rows: { key: string; name: strin
               {r.name}
             </span>
             <span className="h-2 overflow-hidden rounded-full bg-muted">
-              <span className="block h-full rounded-full bg-current" style={{ ...r.color, width: `${(r.cost / peak) * 100}%` }} />
+              <span className="block h-full rounded-full bg-current" style={{ ...r.color, width: `${(r.value / peak) * 100}%` }} />
             </span>
-            <span className="text-right tabular-nums">{formatUsd(r.cost)}</span>
+            <span className="text-right tabular-nums">{r.label}</span>
           </div>
         ))}
       </div>
@@ -508,37 +520,86 @@ function Bars({ label, rows }: { label: string; rows: { key: string; name: strin
   );
 }
 
-function Dashboard({ data }: { data: SpendOutput }) {
+/** Two panels side by side on a wide page, or the one that is shown across it. */
+function Pair({ left, right }: { left: ReactNode; right: ReactNode }) {
+  if (left === null && right === null) return null;
+  return (
+    <div className={cn("grid gap-5", left !== null && right !== null && "md:grid-cols-2")}>
+      {left}
+      {right}
+    </div>
+  );
+}
+
+const CARD = "min-w-0 rounded-lg border border-border p-3";
+
+function Dashboard({ data, panels }: { data: SpendOutput; panels: Panels }) {
+  const { metric } = data;
+  const shown = (id: SpendPanel, panel: () => ReactNode, className?: string): ReactNode =>
+    panels.shown(id) ? <div className={cn("group min-w-0", className)}>{panel()}</div> : null;
+  const hide = (id: SpendPanel): ReactNode => <HideButton id={id} panels={panels} />;
+  const title = data.range === "today" ? "Today" : "Per day";
+  const allHidden = PANELS.every((p) => !panels.shown(p.id));
   return (
     <>
-      <div className="space-y-2">
+      <div className="space-y-2.5">
         <Kpis data={data} />
+        {shown("usage", () => <UsageCards data={data} />)}
         {data.estimated ? <p className="text-xs text-muted-foreground">~ includes list-price estimates for harnesses that record no cost.</p> : null}
       </div>
-      <section aria-label={data.range === "today" ? "Today" : "Per day"}>
-        <Label aside={data.models.length > 0 ? <Legend models={data.models} /> : null}>
-          {data.range === "today" ? "Today" : "Per day"}
-          {zoneSuffix(data.tz)}
-        </Label>
-        {data.range === "today" ? <TodayBar data={data} /> : <DayChart data={data} />}
-      </section>
-      <ThreadTable data={data} />
-      <div className="grid gap-5 md:grid-cols-2">
-        <Bars
-          label="By project"
-          rows={data.projects.map((p) => ({ key: p.projectId ?? "", name: p.name, cost: p.cost, color: PROJECT_COLOR }))}
-        />
-        <Bars
-          label="By model"
-          rows={data.models.map((m, i) => ({
-            key: m.key,
-            name: modelName(m.key),
-            hint: providerName(m.key) ? m.key : undefined,
-            cost: m.cost,
-            color: chartColor(i),
-          }))}
-        />
-      </div>
+      {shown("chart", () => (
+        <section aria-label={title}>
+          <PanelLabel aside={data.models.length > 0 ? <Legend models={data.models} /> : undefined} hide={hide("chart")}>
+            {title}
+            {metric === "cost" ? "" : ` · ${METRIC_WORDS[metric]}`}
+            {zoneSuffix(data.tz)}
+          </PanelLabel>
+          {data.range === "today" ? <TodayBar data={data} /> : <DayChart data={data} />}
+        </section>
+      ))}
+      <Pair left={shown("mix", () => <TokenMix data={data} hide={hide("mix")} />, CARD)} right={shown("time", () => <CallTime data={data} hide={hide("time")} />, CARD)} />
+      {shown("activity", () => <Activity data={data} hide={hide("activity")} />)}
+      {shown("threads", () => <ThreadTable data={data} hide={hide("threads")} />)}
+      {shown("models", () => <ModelTable data={data} hide={hide("models")} />)}
+      <Pair
+        left={shown("projects", () => (
+          <Bars
+            label="By project"
+            metric={metric}
+            hide={hide("projects")}
+            rows={data.projects.map((p) => ({
+              key: p.projectId ?? "",
+              name: p.name,
+              value: p[metric],
+              label: formatMetric(p[metric], metric, data.estimated),
+              color: PROJECT_COLOR,
+            }))}
+          />
+        ))}
+        right={shown("harnesses", () => (
+          <Bars
+            label="By harness"
+            metric={metric}
+            hide={hide("harnesses")}
+            rows={data.harnesses.map((h) => ({
+              key: h.providerId,
+              name: h.name,
+              hint: h.providerId,
+              value: h[metric],
+              label: formatMetric(h[metric], metric, h.estimated),
+              color: HARNESS_COLOR,
+            }))}
+          />
+        ))}
+      />
+      {allHidden ? (
+        <Notice role="status">
+          Every panel is hidden.{" "}
+          <button type="button" onClick={panels.showAll} className="rounded-sm text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+            Show all panels
+          </button>
+        </Notice>
+      ) : null}
     </>
   );
 }
@@ -551,31 +612,33 @@ function Notice({ role, children }: { role: "status" | "alert"; children: ReactN
   );
 }
 
-/** The Burn page: what every thread has spent, by day, thread, project and model. */
+/** The Burn page: what every thread has spent and used, by day, hour, thread, model, project and harness. */
 export function SpendPage({ subPath }: PluginNavPanelProps): ReactNode {
   const [range, setRange] = useState<SpendRange>(() =>
     Object.hasOwn(RANGE_DAYS, subPath) ? (subPath as SpendRange) : "7d",
   );
   const [projectId, setProjectId] = useState<string | null>(null);
+  const [metric, setMetric] = useState<SpendMetric>("cost");
   const [zone, setZone] = useState<SpendZone>(savedZone);
   const chooseZone = useCallback((next: SpendZone) => {
     setZone(next);
     saveZone(next);
   }, []);
-  const { data, error, loading, retry } = useSpend(range, projectId, zone);
+  const { data, error, loading, retry } = useSpend(range, projectId, zone, metric);
+  const panels = usePanels();
 
   let body: ReactNode;
-  if (data === null) {
-    body = error !== null ? (
+  if (data === null && error !== null) {
+    body = (
       <Notice role="alert">
         <div>Could not load spend: {error}</div>
         <button type="button" onClick={retry} className="mt-3 rounded-md border border-border px-3 py-1 text-xs text-foreground hover:bg-state-hover">
           Try again
         </button>
       </Notice>
-    ) : (
-      <Notice role="status">Loading spend…</Notice>
     );
+  } else if (data === null || !panels.ready) {
+    body = <Notice role="status">Loading spend…</Notice>;
   } else if (data.reportedThreads === 0) {
     body = <Notice role="status">{EMPTY_TEXT}</Notice>;
   } else {
@@ -586,7 +649,7 @@ export function SpendPage({ subPath }: PluginNavPanelProps): ReactNode {
             Could not refresh: {error}
           </div>
         ) : null}
-        <Dashboard data={data} />
+        <Dashboard data={data} panels={panels} />
       </>
     );
   }
@@ -595,6 +658,8 @@ export function SpendPage({ subPath }: PluginNavPanelProps): ReactNode {
     <div className="h-full overflow-y-auto p-4 md:p-5">
       <div className={cn("mx-auto w-full max-w-4xl space-y-5 text-foreground", loading && data !== null && "opacity-70")} aria-busy={loading}>
         <Toolbar
+          metric={metric}
+          onMetric={setMetric}
           range={range}
           onRange={setRange}
           zone={zone}
@@ -602,6 +667,7 @@ export function SpendPage({ subPath }: PluginNavPanelProps): ReactNode {
           projectId={projectId}
           onProject={setProjectId}
           options={data?.projectOptions ?? []}
+          panels={panels}
         />
         {body}
       </div>

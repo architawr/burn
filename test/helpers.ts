@@ -1,4 +1,4 @@
-import type { TurnRow, UsageReport } from "../src/report.js";
+import { CALL_TIME_BUCKETS, type DayRow, type ModelRow, type TurnRow, type UsageReport } from "../src/report.js";
 
 type CostIn = Partial<{ input: number; output: number; cacheRead: number; cacheWrite: number }>;
 
@@ -17,7 +17,14 @@ const stamp = () => new Date(Date.UTC(2026, 9, 18, 12, 0, tick++)).toISOString()
 
 export const user = (content: unknown = "do the thing") => ({ type: "message", timestamp: stamp(), message: { role: "user", content } });
 
-export const assistant = (total: number, model = "m1", tokens: CostIn = {}, provider = "p", tools: string[] = []) => ({
+export const assistant = (
+  total: number,
+  model = "m1",
+  tokens: CostIn = {},
+  provider = "p",
+  tools: string[] = [],
+  extra: Record<string, unknown> = {},
+) => ({
   type: "message",
   timestamp: stamp(),
   message: {
@@ -26,6 +33,7 @@ export const assistant = (total: number, model = "m1", tokens: CostIn = {}, prov
     model,
     usage: usage(total, tokens),
     content: tools.map((name, i) => ({ type: "toolCall", id: `t${i}`, name, arguments: {} })),
+    ...extra,
   },
 });
 
@@ -62,6 +70,38 @@ const turnRow = (n: number, minute: number, prompt: string, callCosts: number[],
   models: ["p/claude-opus"],
 });
 
+/** A day row with these models' costs and every other detail zero. */
+export function dayRow(day: string, cost: number, models: Record<string, number> = {}, calls = 0): DayRow {
+  return {
+    day,
+    cost,
+    calls,
+    models: Object.entries(models).map(([key, c]) => ({ key, cost: c, calls: 0, tokens: 0 })),
+    prompts: 0,
+    tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 },
+    costs: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    callTime: new Array<number>(CALL_TIME_BUCKETS).fill(0),
+    failed: 0,
+    aborted: 0,
+  };
+}
+
+/** A byModel row with no token kinds or timing unless given. */
+export const modelRow = (key: string, cost: number, tokens: number, calls: number, over: Partial<ModelRow> = {}): ModelRow => ({
+  key,
+  cost,
+  tokens,
+  calls,
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  timed: 0,
+  ms: 0,
+  failed: 0,
+  ...over,
+});
+
 export function sampleReport(over: Partial<UsageReport> = {}): UsageReport {
   return {
     version: 2,
@@ -73,10 +113,7 @@ export function sampleReport(over: Partial<UsageReport> = {}): UsageReport {
     cost: { input: 2.22, output: 0.21, cacheRead: 1.96, cacheWrite: 0.42, total: 4.82 },
     cacheHitPct: 89,
     context: { tokens: 118_000, window: 1_000_000, percent: 11.8 },
-    byModel: [
-      { key: "p/claude-opus", cost: 4.31, tokens: 1_500_000, calls: 18 },
-      { key: "p/claude-haiku", cost: 0.51, tokens: 236_000, calls: 5 },
-    ],
+    byModel: [modelRow("p/claude-opus", 4.31, 1_500_000, 18), modelRow("p/claude-haiku", 0.51, 236_000, 5)],
     series: [
       { at: Date.UTC(2026, 9, 18, 12, 1, 0), cost: 0.1, tokens: 1000, turn: 1 },
       { at: Date.UTC(2026, 9, 18, 12, 2, 0), cost: 0.62, tokens: 9000, turn: 2 },
@@ -89,8 +126,9 @@ export function sampleReport(over: Partial<UsageReport> = {}): UsageReport {
       turnRow(3, 30, "/review", [0.31, 0.2]),
       turnRow(4, 50, "now add tests for the empty-input case", [0.29, 0.02], [["edit", 1]]),
     ],
-    days: [{ day: "2026-10-18", cost: 4.82, calls: 23, models: [{ key: "p/claude-opus", cost: 4.31 }, { key: "p/claude-haiku", cost: 0.51 }] }],
-    utcDays: [{ day: "2026-10-18", cost: 4.82, calls: 23, models: [{ key: "p/claude-opus", cost: 4.31 }, { key: "p/claude-haiku", cost: 0.51 }] }],
+    days: [dayRow("2026-10-18", 4.82, { "p/claude-opus": 4.31, "p/claude-haiku": 0.51 }, 23)],
+    utcDays: [dayRow("2026-10-18", 4.82, { "p/claude-opus": 4.31, "p/claude-haiku": 0.51 }, 23)],
+    hours: [],
     running: false,
     budget: null,
     stoppedAt: null,

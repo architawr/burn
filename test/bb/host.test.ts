@@ -140,7 +140,7 @@ describe("createPiSessions", () => {
 
   it("fills days in the zone asked for and UTC days beside them", async () => {
     const s = setup();
-    s.write("pi_one", [user(), stamped("2026-10-19T02:00:00.000Z")(assistant(1))]);
+    s.write("pi_one", [stamped("2026-10-19T01:59:00.000Z")(user()), stamped("2026-10-19T02:00:00.000Z")(assistant(1))]);
     const got = await s.sessions.reportOf(["pi_one"], "America/Toronto");
     expect(got?.report.days.map((d) => d.day)).toEqual(["2026-10-18"]);
     expect(got?.report.utcDays.map((d) => d.day)).toEqual(["2026-10-19"]);

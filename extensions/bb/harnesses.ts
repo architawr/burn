@@ -20,4 +20,9 @@ const HARNESSES: Readonly<Record<string, Harness>> = {
 
 const OTHER: Harness = { reader: "events", prices: null, cacheInInput: null, perCall: false };
 
+const NAMES: Readonly<Record<string, string>> = { pi: "pi", codex: "Codex", "claude-code": "Claude Code" };
+
+/** A bb provider's name for people; one Burn does not know reads as its id. */
+export const harnessName = (providerId: string): string => (Object.hasOwn(NAMES, providerId) ? (NAMES[providerId] as string) : providerId);
+
 export const harnessOf = (providerId: string): Harness => (Object.hasOwn(HARNESSES, providerId) ? (HARNESSES[providerId] as Harness) : OTHER);

@@ -5,6 +5,7 @@ import { parseSessionEntries } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHistoryLoader, HISTORY_FILES, lastDays, rangeTotals, type SessionFile, sessionTitle } from "../../extensions/pi/history.js";
 import { dayKey } from "../../src/report.js";
+import { dayRow } from "../helpers.js";
 
 const DAY = 86_400_000;
 const NOW = new Date(2026, 9, 18, 15, 0).getTime();
@@ -51,8 +52,15 @@ describe("createHistoryLoader", () => {
     expect(sessions.map((s) => s.path)).toEqual([today, week]);
     expect(sessions[0]).toMatchObject({ title: "first message", calls: 2, cost: 1.5 });
     expect(sessions[1]).toMatchObject({ title: "Named session", calls: 1, cost: 2 });
-    expect(sessions[0]!.days).toEqual([{ day: dayKey(NOW), cost: 1.5, calls: 2, models: [{ key: "p/m", cost: 1.5 }] }]);
-    expect(sessions[0]!.utcDays).toEqual([{ day: dayKey(NOW, "UTC"), cost: 1.5, calls: 2, models: [{ key: "p/m", cost: 1.5 }] }]);
+    const spent = (day: string) => ({
+      ...dayRow(day, 1.5, {}, 2),
+      models: [{ key: "p/m", cost: 1.5, calls: 2, tokens: 30 }],
+      prompts: 1,
+      tokens: { input: 20, output: 10, cacheRead: 0, cacheWrite: 0, reasoning: 0 },
+      costs: { input: 1.5, output: 0, cacheRead: 0, cacheWrite: 0 },
+    });
+    expect(sessions[0]!.days).toEqual([spent(dayKey(NOW))]);
+    expect(sessions[0]!.utcDays).toEqual([spent(dayKey(NOW, "UTC"))]);
   });
 
   it("counts a forked session only from the time its header was written", async () => {
@@ -95,8 +103,8 @@ describe("rangeTotals", () => {
     updatedAt: NOW - Math.min(...daysAgo) * DAY,
     calls: daysAgo.length,
     cost: cost * daysAgo.length,
-    days: daysAgo.map((d) => ({ day: dayKey(NOW - d * DAY), cost, calls: 1, models: [] })),
-    utcDays: daysAgo.map((d) => ({ day: dayKey(NOW - d * DAY, "UTC"), cost, calls: 1, models: [] })),
+    days: daysAgo.map((d) => dayRow(dayKey(NOW - d * DAY), cost, {}, 1)),
+    utcDays: daysAgo.map((d) => dayRow(dayKey(NOW - d * DAY, "UTC"), cost, {}, 1)),
   });
 
   it("adds up spend per range and per day, listing sessions with spend in the range", () => {
@@ -123,7 +131,7 @@ describe("rangeTotals", () => {
   it("lists UTC days and sums each session's UTC days when asked", () => {
     const late = Date.UTC(2026, 9, 18, 23, 30);
     expect(lastDays(late, 2, true)).toEqual(["2026-10-17", "2026-10-18"]);
-    const session = { ...summary("a", [0], 2), days: [], utcDays: [{ day: "2026-10-18", cost: 2, calls: 1, models: [] }] };
+    const session = { ...summary("a", [0], 2), days: [], utcDays: [dayRow("2026-10-18", 2, {}, 1)] };
     expect(rangeTotals([session], 1, 7, late, true)).toMatchObject({ cost: 2, calls: 1 });
     expect(rangeTotals([session], 1, 7, late)).toMatchObject({ cost: 0, calls: 0 });
   });

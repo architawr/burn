@@ -1,10 +1,10 @@
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it } from "vitest";
-import { reportKey } from "../../extensions/bb/keys.js";
+import { reportKey, SPEND_PANELS_KEY } from "../../extensions/bb/keys.js";
 import { dayDate, localDays } from "../../extensions/bb/spend/days.js";
 import { checkDailyBudget, createSpendHandlers, type SpendDeps } from "../../extensions/bb/spend/server.js";
-import { dayKey, type DayRow, type UsageReport } from "../../src/report.js";
-import { sampleReport } from "../helpers.js";
+import { CALL_TIME_BUCKETS, dayKey, type DayRow, HOUR_MS, type UsageReport } from "../../src/report.js";
+import { dayRow, modelRow, sampleReport } from "../helpers.js";
 
 const NOW = new Date(2026, 9, 18, 15, 0, 0).getTime();
 const DAY_MS = 86_400_000;
@@ -17,6 +17,7 @@ interface Seed {
   projectId?: string;
   children?: number;
   deletedAt?: number | null;
+  providerId?: string;
 }
 
 const PROJECTS = [
@@ -30,12 +31,19 @@ afterEach(() => {
   for (const dispose of disposers.splice(0)) dispose();
 });
 
-const day = (daysAgo: number, cost: number, models: Record<string, number> = { "p/claude-opus": cost }, calls = 2): DayRow => ({
-  day: ago(daysAgo),
-  cost,
-  calls,
-  models: Object.entries(models).map(([key, c]) => ({ key, cost: c })),
+type ModelUse = number | { cost?: number; calls?: number; tokens?: number };
+
+/** A day's row: each model a cost, or its cost, calls and tokens; `detail` sets the rest. */
+const day = (daysAgo: number, cost: number, models: Record<string, ModelUse> = { "p/claude-opus": cost }, calls = 2, detail: Partial<DayRow> = {}): DayRow => ({
+  ...dayRow(ago(daysAgo), cost, {}, calls),
+  models: Object.entries(models).map(([key, m]) =>
+    typeof m === "number" ? { key, cost: m, calls: 0, tokens: 0 } : { key, cost: m.cost ?? 0, calls: m.calls ?? 0, tokens: m.tokens ?? 0 },
+  ),
+  ...detail,
 });
+
+/** Day tokens, all input unless given. */
+const toks = (input: number, more: Partial<DayRow["tokens"]> = {}): DayRow["tokens"] => ({ input, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, ...more });
 
 const reportWith = (days: DayRow[], over: Partial<UsageReport> = {}): UsageReport => {
   const total = days.reduce((sum, d) => sum + d.cost, 0);
@@ -71,6 +79,7 @@ async function setup(opts: {
             title: seed.title === undefined ? `Title of ${threadId}` : seed.title,
             titleFallback: seed.titleFallback ?? null,
             projectId: seed.projectId ?? "proj_a",
+            providerId: seed.providerId ?? "pi",
             deletedAt: seed.deletedAt ?? null,
           });
         },
@@ -90,13 +99,15 @@ async function setup(opts: {
     now: () => now,
   });
   const deps = makeDeps();
-  const { spend } = createSpendHandlers(deps);
+  const { spend, spendPanels, setSpendPanels } = createSpendHandlers(deps);
   return {
     bb,
     harness,
     deps,
     makeDeps,
     spend,
+    spendPanels,
+    setSpendPanels,
     setNow: (next: number) => {
       now = next;
     },
@@ -116,7 +127,8 @@ describe("spend", () => {
     expect(week.days.map((d) => d.day)).toEqual([6, 5, 4, 3, 2, 1, 0].map(ago));
     expect(week.days.map((d) => d.cost)).toEqual([0.5, 0, 0, 1, 0, 0, 2]);
     expect(week.days[1]?.models).toEqual([]);
-    expect(week.days[6]?.models).toEqual([{ key: "p/claude-opus", cost: 2 }]);
+    expect(week.days[6]?.models).toEqual([{ key: "p/claude-opus", cost: 2, calls: 0, tokens: 0 }]);
+    expect(week.metric).toBe("cost");
 
     const today = await s.spend({ range: "today", projectId: null });
     expect(today.days.map((d) => d.day)).toEqual([ago(0)]);
@@ -139,13 +151,13 @@ describe("spend", () => {
       threads: { thr_aaaaaa01: {}, thr_aaaaaa02: {} },
     });
     const out = await s.spend({ range: "7d", projectId: null });
-    expect(out.models).toEqual([
+    expect(out.models).toMatchObject([
       { key: "p/m1", cost: 7 },
       { key: "p/m2", cost: 4 },
       { key: "p/m3", cost: 4 },
       { key: "Other", cost: 6 },
     ]);
-    expect(out.days[6]).toEqual({
+    expect(out.days[6]).toMatchObject({
       day: ago(0),
       cost: 18,
       models: [
@@ -155,7 +167,7 @@ describe("spend", () => {
         { key: "Other", cost: 3 },
       ],
     });
-    expect(out.days[5]?.models).toEqual([{ key: "Other", cost: 3 }]);
+    expect(out.days[5]?.models).toMatchObject([{ key: "Other", cost: 3 }]);
   });
 
   it("filters everything to one project, and offers every project with a report", async () => {
@@ -175,8 +187,8 @@ describe("spend", () => {
     });
     const all = await s.spend({ range: "7d", projectId: null });
     expect(all.projects).toEqual([
-      { projectId: "proj_b", name: "beta", cost: 5 },
-      { projectId: "proj_a", name: "alpha", cost: 4 },
+      { projectId: "proj_b", name: "beta", cost: 5, tokens: 0, calls: 2 },
+      { projectId: "proj_a", name: "alpha", cost: 4, tokens: 0, calls: 4 },
     ]);
     expect(all.projectOptions).toEqual([
       { projectId: "proj_a", name: "alpha" },
@@ -189,7 +201,7 @@ describe("spend", () => {
     expect(alpha.previousTotal).toBe(2);
     expect(alpha.threadCount).toBe(2);
     expect(alpha.threads.map((t) => t.threadId)).toEqual(["thr_aaaaaa02", "thr_aaaaaa03"]);
-    expect(alpha.projects).toEqual([{ projectId: "proj_a", name: "alpha", cost: 4 }]);
+    expect(alpha.projects).toMatchObject([{ projectId: "proj_a", name: "alpha", cost: 4 }]);
     expect(alpha.days.map((d) => d.cost)).toEqual([0, 0, 0, 0, 1, 3, 0]);
     expect(alpha.projectOptions).toEqual(all.projectOptions);
     expect(alpha.reportedThreads).toBe(4);
@@ -216,8 +228,10 @@ describe("spend", () => {
       title: "Title of thr_bbbbbb12",
       projectName: "beta",
       model: "claude-opus",
+      harness: "pi",
       childCount: 3,
       calls: 12,
+      tokens: 0,
       rangeCost: 12,
       total: 112,
       budget: null,
@@ -250,7 +264,7 @@ describe("spend", () => {
   });
 
   it("sums each thread's UTC days over UTC calendar days when asked, and says which", async () => {
-    const utc = (n: number, cost: number): DayRow => ({ day: utcAgo(n), cost, calls: 1, models: [{ key: "p/claude-opus", cost }] });
+    const utc = (n: number, cost: number): DayRow => dayRow(utcAgo(n), cost, { "p/claude-opus": cost }, 1);
     const s = await setup({
       reports: {
         thr_aaaaaa01: reportWith([day(0, 2)], { utcDays: [utc(1, 1), utc(0, 5)] }),
@@ -289,12 +303,14 @@ describe("spend", () => {
   });
 
   it("reports the median thread, cost per call and cache hit rate across the threads in range", async () => {
+    // The lifetime totals would give a cache hit rate of 0%; the range's own days give 40%.
+    const lifetime = { tokens: { input: 9000, output: 9, cacheRead: 0, cacheWrite: 0, reasoning: 0 } };
     const s = await setup({
       reports: {
-        thr_aaaaaa01: reportWith([day(0, 1, undefined, 1)], { tokens: { input: 100, output: 9, cacheRead: 300, cacheWrite: 0, reasoning: 0 } }),
-        thr_aaaaaa02: reportWith([day(1, 3, undefined, 3)], { tokens: { input: 100, output: 9, cacheRead: 100, cacheWrite: 400, reasoning: 0 } }),
-        thr_aaaaaa03: reportWith([day(2, 8, undefined, 4)], { tokens: { input: 0, output: 9, cacheRead: 0, cacheWrite: 0, reasoning: 0 } }),
-        thr_aaaaaa04: reportWith([day(12, 90)], { tokens: { input: 9000, output: 9, cacheRead: 0, cacheWrite: 0, reasoning: 0 } }),
+        thr_aaaaaa01: reportWith([day(0, 1, undefined, 1, { tokens: toks(100, { output: 9, cacheRead: 300 }) })], lifetime),
+        thr_aaaaaa02: reportWith([day(1, 3, undefined, 3, { tokens: toks(100, { output: 9, cacheRead: 100, cacheWrite: 400 }) })], lifetime),
+        thr_aaaaaa03: reportWith([day(2, 8, undefined, 4, { tokens: toks(0, { output: 9 }) })], lifetime),
+        thr_aaaaaa04: reportWith([day(12, 90, undefined, 2, { tokens: toks(9000) })], lifetime),
       },
       threads: { thr_aaaaaa01: {}, thr_aaaaaa02: {}, thr_aaaaaa03: {}, thr_aaaaaa04: {} },
       daily: 50,
@@ -392,6 +408,233 @@ describe("spend", () => {
     expect(out.threads).toHaveLength(10);
     expect(out.models.length).toBeLessThanOrEqual(4);
     expect(elapsed).toBeLessThan(1000);
+  });
+});
+
+describe("spend by tokens and calls", () => {
+  const mixed = () => ({
+    reports: {
+      thr_aaaaaa01: reportWith([
+        day(0, 10.3, { "anthropic/opus": { cost: 10, calls: 5, tokens: 1000 }, "anthropic/haiku": { cost: 0.1, calls: 100, tokens: 10 }, "anthropic/sonnet": { cost: 0.2, tokens: 500 } }, 105, {
+          tokens: toks(1510),
+        }),
+      ]),
+      thr_aaaaaa02: reportWith([day(0, 2, { "codex/gpt": { cost: 2, calls: 50, tokens: 5000 } }, 50, { tokens: toks(5000) })], { estimated: true }),
+      thr_aaaaaa03: reportWith([day(0, 4, { "claude-code/opus": { cost: 4, calls: 1, tokens: 20_000 } }, 1, { tokens: toks(20_000) })]),
+    },
+    threads: {
+      thr_aaaaaa01: { projectId: "proj_a" },
+      thr_aaaaaa02: { projectId: "proj_b", providerId: "codex" },
+      thr_aaaaaa03: { projectId: "proj_c", providerId: "claude-code" },
+    },
+  });
+
+  it("ranks the threads, projects, harnesses, Models table and chart by the metric asked for", async () => {
+    const s = await setup(mixed());
+    const by = async (metric: "cost" | "tokens" | "calls") => s.spend({ range: "7d", projectId: null, metric });
+    const cost = await by("cost");
+    const tokens = await by("tokens");
+    const calls = await by("calls");
+    expect([cost.metric, tokens.metric, calls.metric]).toEqual(["cost", "tokens", "calls"]);
+
+    const ids = (out: typeof cost) => out.threads.map((t) => t.threadId.slice(-2));
+    expect([ids(cost), ids(tokens), ids(calls)]).toEqual([
+      ["01", "03", "02"],
+      ["03", "02", "01"],
+      ["01", "02", "03"],
+    ]);
+    expect(tokens.threads[0]).toMatchObject({ harness: "Claude Code", tokens: 20_000, calls: 1, rangeCost: 4 });
+
+    const names = (rows: { name: string }[]) => rows.map((r) => r.name);
+    expect([names(cost.projects), names(tokens.projects), names(calls.projects)]).toEqual([
+      ["alpha", "gamma", "beta"],
+      ["gamma", "beta", "alpha"],
+      ["alpha", "beta", "gamma"],
+    ]);
+    expect([names(cost.harnesses), names(tokens.harnesses), names(calls.harnesses)]).toEqual([
+      ["pi", "Claude Code", "Codex"],
+      ["Claude Code", "Codex", "pi"],
+      ["pi", "Codex", "Claude Code"],
+    ]);
+    expect(cost.harnesses.find((h) => h.providerId === "codex")).toEqual({ providerId: "codex", name: "Codex", cost: 2, tokens: 5000, calls: 50, estimated: true });
+
+    const rows = (out: typeof cost) => out.modelStats.map((m) => m.key);
+    expect(rows(cost)).toEqual(["anthropic/opus", "claude-code/opus", "codex/gpt", "anthropic/sonnet", "anthropic/haiku"]);
+    expect(rows(tokens)).toEqual(["claude-code/opus", "codex/gpt", "anthropic/opus", "anthropic/sonnet", "anthropic/haiku"]);
+    expect(rows(calls)).toEqual(["anthropic/haiku", "codex/gpt", "anthropic/opus", "claude-code/opus", "anthropic/sonnet"]);
+    expect(cost.modelStats.map((m) => [m.harness, m.estimated])).toEqual([
+      ["pi", false],
+      ["Claude Code", false],
+      ["Codex", true],
+      ["pi", false],
+      ["pi", false],
+    ]);
+
+    const chart = (out: typeof cost) => out.models.map((m) => m.key);
+    expect(chart(cost)).toEqual(["anthropic/opus", "claude-code/opus", "codex/gpt", "Other"]);
+    expect(chart(tokens)).toEqual(["claude-code/opus", "codex/gpt", "anthropic/opus", "Other"]);
+    // No call reached sonnet, so it has no slice by calls.
+    expect(chart(calls)).toEqual(["anthropic/haiku", "codex/gpt", "anthropic/opus", "claude-code/opus"]);
+    expect(tokens.models.at(-1)).toMatchObject({ key: "Other", tokens: 510, calls: 100 });
+    expect(tokens.models.at(-1)?.cost).toBeCloseTo(0.3);
+    expect(tokens.days[6]).toMatchObject({ tokens: 26_510, calls: 156 });
+    expect(tokens.days[6]?.cost).toBeCloseTo(16.3);
+  });
+
+  it("sums tokens, prompts and the token mix over the range only, and takes the cache hit rate from them", async () => {
+    const s = await setup({
+      reports: {
+        thr_aaaaaa01: reportWith(
+          [
+            day(10, 9, undefined, 2, { tokens: toks(7000), prompts: 9 }),
+            day(3, 1, undefined, 2, { tokens: toks(100, { cacheRead: 100, cacheWrite: 400 }), prompts: 2, costs: { input: 0.25, output: 0, cacheRead: 0.25, cacheWrite: 0.5 } }),
+            day(0, 2, undefined, 2, {
+              tokens: toks(100, { output: 10, cacheRead: 300, reasoning: 5 }),
+              prompts: 3,
+              costs: { input: 1, output: 0.5, cacheRead: 0.5, cacheWrite: 0 },
+            }),
+          ],
+          { tokens: { input: 9000, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 } },
+        ),
+      },
+      threads: { thr_aaaaaa01: {} },
+    });
+    const week = await s.spend({ range: "7d", projectId: null });
+    expect(week).toMatchObject({ tokens: 1010, previousTokens: 7000, calls: 4, prompts: 5, cacheHitPct: 40 });
+    expect(week.mix).toEqual({
+      tokens: { input: 200, output: 10, cacheRead: 400, cacheWrite: 400, reasoning: 5 },
+      costs: { input: 1.25, output: 0.5, cacheRead: 0.75, cacheWrite: 0.5 },
+    });
+  });
+
+  it("counts a token-only thread and a thread whose one call used nothing, without moving the median thread", async () => {
+    const s = await setup({
+      reports: {
+        thr_aaaaaa01: reportWith([day(0, 2)]),
+        thr_aaaaaa02: reportWith([day(0, 4)]),
+        thr_aaaaaa03: reportWith([day(0, 0, { "codex/gpt": { tokens: 9000, calls: 3 } }, 3, { tokens: toks(9000) })]),
+        thr_aaaaaa04: reportWith([day(0, 0, {}, 1)]),
+      },
+      threads: { thr_aaaaaa01: {}, thr_aaaaaa02: {}, thr_aaaaaa03: { providerId: "codex" }, thr_aaaaaa04: {} },
+    });
+    const cost = await s.spend({ range: "7d", projectId: null });
+    expect(cost).toMatchObject({ threadCount: 4, medianThreadCost: 3, perCall: 6 / 4, total: 6, tokens: 9000, calls: 8 });
+    expect(cost.models.map((m) => m.key)).toEqual(["p/claude-opus"]);
+    const tokens = await s.spend({ range: "7d", projectId: null, metric: "tokens" });
+    expect(tokens.threads[0]?.threadId).toBe("thr_aaaaaa03");
+    expect(tokens.days[6]?.models).toEqual([{ key: "codex/gpt", cost: 0, tokens: 9000, calls: 3 }]);
+    const calls = await s.spend({ range: "7d", projectId: null, metric: "calls" });
+    expect(calls.threads.map((t) => t.threadId)).toContain("thr_aaaaaa04");
+  });
+
+  it("estimates the call time from the range's buckets, with failed and stopped calls", async () => {
+    const callTime = (at: Record<number, number>) => Array.from({ length: CALL_TIME_BUCKETS }, (_, i) => at[i] ?? 0);
+    const s = await setup({
+      reports: {
+        thr_aaaaaa01: reportWith([day(20, 1, undefined, 9, { callTime: callTime({ 8: 9 }), failed: 9 }), day(0, 1, undefined, 60, { callTime: callTime({ 3: 60 }), failed: 2, aborted: 1 })]),
+        thr_aaaaaa02: reportWith([day(1, 1, undefined, 40, { callTime: callTime({ 3: 40 }) })]),
+      },
+      threads: { thr_aaaaaa01: {}, thr_aaaaaa02: {} },
+    });
+    const week = await s.spend({ range: "7d", projectId: null });
+    expect(week.callTime).toMatchObject({ buckets: callTime({ 3: 100 }), timed: 100, failed: 2, aborted: 1 });
+    expect(week.callTime.p50).toBeCloseTo(4000 * Math.SQRT2, 6);
+    expect(week.callTime.p90).toBeGreaterThan(week.callTime.p50 as number);
+    const none = await s.spend({ range: "today", projectId: "proj_b" });
+    expect(none.callTime).toEqual({ buckets: callTime({}), timed: 0, failed: 0, aborted: 0, p50: null, p90: null });
+  });
+
+  it("maps the counted threads' hours onto the chosen days, in the zone and metric asked for", async () => {
+    const local = new Date(2026, 9, 18, 11).getTime();
+    const utc = Date.UTC(2026, 9, 17, 23);
+    const hours = [
+      { hour: Math.floor(local / HOUR_MS), calls: 3, tokens: 300, cost: 1.5 },
+      { hour: Math.floor(utc / HOUR_MS), calls: 1, tokens: 50, cost: 0.25 },
+    ];
+    const s = await setup({
+      // No UTC days, so the local ones stand in under UTC too.
+      reports: {
+        thr_aaaaaa01: reportWith([day(0, 1)], { hours, utcDays: [] }),
+        thr_aaaaaa02: reportWith([day(0, 1)], { hours, utcDays: [] }),
+        thr_aaaaaa03: reportWith([day(30, 1)], { hours, utcDays: [] }),
+      },
+      threads: { thr_aaaaaa01: {}, thr_aaaaaa02: {}, thr_aaaaaa03: {} },
+    });
+    const week = await s.spend({ range: "7d", projectId: null, metric: "calls" });
+    expect(week.activity.map((r) => r.day)).toEqual(week.days.map((d) => d.day));
+    const at = new Date(hours[0]!.hour * HOUR_MS);
+    expect(week.activity.find((r) => r.day === dayKey(at.getTime()))?.hours[at.getHours()]).toBe(6);
+    const inUtc = await s.spend({ range: "7d", projectId: null, tz: "utc", metric: "tokens" });
+    expect(inUtc.activity.find((r) => r.day === "2026-10-17")?.hours[23]).toBe(100);
+  });
+
+  it("keeps one model's rows apart per harness, and takes the ratios from the threads' whole lives", async () => {
+    const opus = { "p/opus": { cost: 2, calls: 4, tokens: 900 } };
+    const s = await setup({
+      reports: {
+        thr_aaaaaa01: reportWith([day(0, 2, opus, 4)], {
+          byModel: [modelRow("p/opus", 9, 9000, 10, { input: 100, cacheRead: 300, cacheWrite: 100, output: 2000, timed: 10, ms: 8000, failed: 1 })],
+        }),
+        thr_aaaaaa02: reportWith([day(0, 2, opus, 4)], {
+          estimated: true,
+          byModel: [modelRow("p/opus", 5, 5000, 6, { input: 50, cacheRead: 50 })],
+        }),
+      },
+      threads: { thr_aaaaaa01: {}, thr_aaaaaa02: { providerId: "claude-code" } },
+    });
+    const out = await s.spend({ range: "7d", projectId: null });
+    expect(out.modelStats).toEqual([
+      { key: "p/opus", harness: "Claude Code", cost: 2, tokens: 900, calls: 4, cacheHitPct: 50, avgCallMs: null, outputPerSec: null, failedPct: null, estimated: true },
+      { key: "p/opus", harness: "pi", cost: 2, tokens: 900, calls: 4, cacheHitPct: 60, avgCallMs: 800, outputPerSec: 250, failedPct: 10, estimated: false },
+    ]);
+  });
+
+  it("folds models past the tenth into Other, with a thread's own Other", async () => {
+    const reports: Record<string, UsageReport> = {};
+    const threads: Record<string, Seed> = {};
+    for (let i = 1; i <= 11; i++) {
+      const id = `thr_gggggg${String(i).padStart(2, "0")}`;
+      reports[id] = reportWith([day(0, i, { [`p/m${i}`]: i })]);
+      threads[id] = {};
+    }
+    reports.thr_gggggg12 = reportWith([day(0, 0.5, { Other: 0.5 })]);
+    threads.thr_gggggg12 = {};
+    const out = await (await setup({ reports, threads })).spend({ range: "7d", projectId: null });
+    expect(out.modelStats).toHaveLength(11);
+    expect(out.modelStats[0]?.key).toBe("p/m11");
+    expect(out.modelStats.at(-1)).toEqual({
+      key: "Other",
+      harness: null,
+      cost: 1.5,
+      tokens: 0,
+      calls: 0,
+      cacheHitPct: null,
+      avgCallMs: null,
+      outputPerSec: null,
+      failedPct: null,
+      estimated: false,
+    });
+  });
+
+  it("counts the threads running now", async () => {
+    const s = await setup({
+      reports: { thr_aaaaaa01: reportWith([day(0, 1)], { running: true }), thr_aaaaaa02: reportWith([day(0, 1)]), thr_aaaaaa03: reportWith([day(30, 1)], { running: true }) },
+      threads: { thr_aaaaaa01: {}, thr_aaaaaa02: {}, thr_aaaaaa03: {} },
+    });
+    expect((await s.spend({ range: "7d", projectId: null })).runningCount).toBe(1);
+  });
+});
+
+describe("spend panels", () => {
+  it("keeps the hidden panels, deduped, and drops ids it does not know", async () => {
+    const s = await setup({ reports: {}, threads: {} });
+    expect(await s.spendPanels({})).toEqual({ hidden: [] });
+    expect(await s.setSpendPanels({ hidden: ["mix", "mix", "threads"] })).toEqual({ hidden: ["mix", "threads"] });
+    expect(await s.spendPanels({})).toEqual({ hidden: ["mix", "threads"] });
+    await s.bb.storage.kv.set(SPEND_PANELS_KEY, { hidden: ["mix", "sparkles", 3] });
+    expect(await s.spendPanels({})).toEqual({ hidden: ["mix"] });
+    await s.bb.storage.kv.set(SPEND_PANELS_KEY, "nonsense");
+    expect(await s.spendPanels({})).toEqual({ hidden: [] });
   });
 });
 

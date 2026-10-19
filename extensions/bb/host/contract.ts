@@ -2,8 +2,8 @@ import { defineRpcContract, type ExperimentalHostSignals } from "@get-bb/plugin-
 import { z } from "zod";
 import { THREAD_ID, usageReportSchema } from "../schema.js";
 
-/** Threads per `reports` call: 40 reports of at most 128 KiB stay under the host's 8 MiB output limit. */
-export const HOST_BATCH = 40;
+/** Threads per `reports` call: 32 reports of at most 240 KiB stay under the host's 8 MiB output limit. */
+export const HOST_BATCH = 32;
 /** Session ids per `changed` signal; more than this is sent as `all`. */
 export const CHANGED_MAX = 512;
 

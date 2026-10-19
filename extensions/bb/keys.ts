@@ -11,3 +11,6 @@ export const logKey = (threadId: string): string => `log:${threadId}`;
 
 /** When Burn last stopped a thread at its budget through bb: `{ at }`. */
 export const stoppedKey = (threadId: string): string => `stopped:${threadId}`;
+
+/** Which Burn page panels are hidden: { hidden: SpendPanel[] }. */
+export const SPEND_PANELS_KEY = "spend-panels";

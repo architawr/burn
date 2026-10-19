@@ -76,6 +76,11 @@ Outside the terminal UI, `/burn` prints the same figures as text. Sessions that 
 - Every thread menu has a **Cost** entry with the thread's cost, including its children, and the same actions.
 - Threads over their budget get a red flame in the sidebar.
 - The **Burn** page in bb's navigation shows spend for today, the last 7 days or the last 30 days, optionally for one project. Its **Local · UTC** switch picks which calendar day counts as today: the bb machine's local day, the default, or the UTC day that Shopify's AI proxy and menu bar count. The page remembers the choice.
+  - Its **Show** switch picks what the page measures: **Cost**, **Tokens** or **Calls**. The choice re-ranks the daily chart, the activity map, the threads, the Models table and the bars by project and by harness.
+  - Under the four cost cards, usage cards show the tokens, the calls and prompts, the median call time with its 90th percentile (p90), and the failed calls.
+  - **Token mix** sets each kind of token (input, cache write, cache read, output, and the reasoning part of output) against what it cost. **Call time** shows how long calls took, and how many failed or were stopped. **Activity by hour** shows the busiest hours of each day.
+  - The **Models** table lists each model with its harness, calls, tokens, cost, cache hit rate, average call time, output tokens per second and failure rate. **By harness** splits the use between pi, Codex, Claude Code and any other harness.
+  - The **Panels** menu, and the hide button that appears when you point at a panel, hide any panel apart from the four cost cards and the toolbar. Burn remembers the choice for every bb window.
 
 Settings, in Burn's plugin settings:
 
@@ -103,6 +108,10 @@ Settings, in Burn's plugin settings:
 - bb's footer has no plugin slot. The chip is a thread header action that moves itself next to the context circle by using bb's page markup (`[data-follow-up-composer-footer]`). If bb changes that markup the chip stays in the thread header.
 - The sidebar flag uses an experimental bb API; on a bb without it, the flag does not show. It covers every thread whose pi extension has reported, and every other thread active in the last 30 days.
 - The Burn page counts the spend of every thread, by the days on which its model calls were made.
+- Call time and failed calls come only from pi's session logs, and only from the calls pi timed. Codex and Claude Code record neither, so their figures read "—".
+- The Models table's cache hit rate, average call time, output per second and failure rate cover the whole life of the threads in the range, not only the chosen days.
+- The activity map counts by UTC clock hour. In a zone with a half-hour offset it shifts by half an hour, so calls in the first half hour after midnight show on the previous day.
+- A report from a Burn 0.2 pi extension, or the last report of an offline machine, has no token, call-time or hourly detail until Burn reads the thread again.
 - Dollar figures are list prices, either the ones pi recorded or Burn's estimates (`~$`). Neither knows about discounts or what a proxy actually bills. Estimates also price every cache write as a five-minute write, because bb's usage events do not say which writes were one-hour writes.
 - Claude Code threads update once per turn, do not count Claude Code's subagents, and are never stopped at their budget, though budget alerts still fire.
 - Router aliases such as `shopify/auto-best` have no known price, so their threads show tokens.

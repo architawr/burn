@@ -13,6 +13,29 @@ export interface TokenParts {
   cacheWrite: number;
 }
 
+export type KindCosts = Omit<CostParts, "total">;
+
+/** One provider/model's use over the whole session. */
+export interface ModelRow extends TokenParts {
+  key: string;
+  cost: number;
+  tokens: number;
+  calls: number;
+  /** Calls with a recorded duration. */
+  timed: number;
+  /** The timed calls' durations added up. */
+  ms: number;
+  failed: number;
+}
+
+/** Use in one clock hour; `hour` counts hours since the Unix epoch, in UTC. */
+export interface HourRow {
+  hour: number;
+  calls: number;
+  tokens: number;
+  cost: number;
+}
+
 /** One user prompt and every model call it led to, up to the next user prompt. */
 export interface TurnRow {
   /** 1-based; 0 is usage recorded before the first user prompt. */
@@ -37,7 +60,17 @@ export interface DayRow {
   day: string;
   cost: number;
   calls: number;
-  models: { key: string; cost: number }[];
+  /** The day's costliest models; `tokens` counts all four kinds. */
+  models: { key: string; cost: number; calls: number; tokens: number }[];
+  /** User prompts sent that day. */
+  prompts: number;
+  tokens: TokenParts & { reasoning: number };
+  costs: KindCosts;
+  /** Timed calls per CALL_TIME_EDGES_MS bucket. */
+  callTime: number[];
+  /** Calls that ended in a provider error, and calls that were stopped. */
+  failed: number;
+  aborted: number;
 }
 
 export interface UsageReport {
@@ -50,7 +83,7 @@ export interface UsageReport {
   cost: CostParts;
   cacheHitPct: number | null;
   context: { tokens: number | null; window: number; percent: number | null } | null;
-  byModel: { key: string; cost: number; tokens: number; calls: number }[];
+  byModel: ModelRow[];
   /** The last SERIES_MAX calls; `turn` is the TurnRow.n the call belongs to. */
   series: { at: number; cost: number; tokens: number; turn: number }[];
   /** Every turn so far, including those no longer in `turns`. */
@@ -60,6 +93,8 @@ export interface UsageReport {
   days: DayRow[];
   /** The same spend by UTC calendar day. */
   utcDays: DayRow[];
+  /** The newest HOURS_MAX hours that had use, oldest first. */
+  hours: HourRow[];
   /** Set by the pi extension: true while pi is working on a prompt. */
   running: boolean;
   /** Set by the pi extension: the thread budget pi itself knows of (`/burn budget`), in dollars. */
@@ -85,6 +120,17 @@ export const TURN_MODELS_MAX = 3;
 export const DAY_MODELS_MAX = 4;
 export const TOOLS_KEY = "Tools/summaries";
 export const OTHER_KEY = "Other";
+/** Upper edges of the call-time buckets; the last bucket holds everything from the last edge up. */
+export const CALL_TIME_EDGES_MS = [1000, 2000, 4000, 8000, 16000, 32000, 64000, 128000] as const;
+export const CALL_TIME_BUCKETS = CALL_TIME_EDGES_MS.length + 1;
+export const HOURS_MAX = 31 * 24;
+export const HOUR_MS = 3_600_000;
+
+/** The index of the call-time bucket that `ms` falls in. */
+export function callTimeBucket(ms: number): number {
+  const i = CALL_TIME_EDGES_MS.findIndex((edge) => ms < edge);
+  return i === -1 ? CALL_TIME_EDGES_MS.length : i;
+}
 
 interface Usage {
   input: number;
@@ -97,17 +143,12 @@ interface Usage {
   estimated?: boolean;
 }
 
-interface Row {
-  key: string;
-  cost: number;
-  tokens: number;
-  calls: number;
-}
-
 interface Counted {
   usage: Usage;
   key: string;
   call: boolean;
+  durationMs?: number;
+  stopReason?: string;
 }
 
 type Block = { type?: string; text?: string; name?: string };
@@ -121,6 +162,8 @@ interface Loose {
     responseModel?: string;
     usage?: Usage;
     content?: string | Block[];
+    stopReason?: string;
+    durationMs?: number;
   };
   usage?: Usage;
   provider?: string;
@@ -136,7 +179,13 @@ const tokensOf = (u: TokenParts): number => u.input + u.output + u.cacheRead + u
 function classify(entry: Loose): Counted | null {
   const { message } = entry;
   if (entry.type === "message" && message?.role === "assistant" && message.usage) {
-    return { usage: message.usage, key: `${message.provider}/${message.responseModel ?? message.model}`, call: true };
+    return {
+      usage: message.usage,
+      key: `${message.provider}/${message.responseModel ?? message.model}`,
+      call: true,
+      durationMs: message.durationMs,
+      stopReason: message.stopReason,
+    };
   }
   if (entry.type === "usage" && entry.usage) {
     return { usage: entry.usage, key: `${entry.provider}/${entry.model}`, call: false };
@@ -229,11 +278,15 @@ export function slimEntry(entry: unknown): EntryLike | null {
     slim.model = entry.model as string;
   }
   if (entry.type === "message" && isRecord(entry.message)) {
-    const { role, provider, model, responseModel, content } = entry.message as NonNullable<Loose["message"]>;
+    const { role, provider, model, responseModel, content, stopReason, durationMs } = entry.message as NonNullable<Loose["message"]>;
     const message: NonNullable<Loose["message"]> = { role };
     if (provider !== undefined) message.provider = provider;
     if (model !== undefined) message.model = model;
     if (responseModel !== undefined) message.responseModel = responseModel;
+    if (role === "assistant") {
+      if (stopReason !== undefined) message.stopReason = stopReason;
+      if (durationMs !== undefined) message.durationMs = durationMs;
+    }
     const messageUsage = slimUsage(entry.message.usage);
     if (messageUsage) message.usage = messageUsage;
     if (role === "user") message.content = promptExcerpt(content);
@@ -246,45 +299,114 @@ export function slimEntry(entry: unknown): EntryLike | null {
   return slim;
 }
 
-interface DayDraft {
-  cost: number;
-  calls: number;
-  models: Map<string, number>;
+type DayModel = DayRow["models"][number];
+
+interface DayDraft extends Omit<DayRow, "day" | "models"> {
+  models: Map<string, DayModel>;
 }
 
-function addDay(days: Map<string, DayDraft>, day: string, key: string, cost: number, call: boolean): void {
-  const draft = days.get(day) ?? { cost: 0, calls: 0, models: new Map<string, number>() };
+/** One counted usage, as the day, model and hour totals take it. */
+interface Sample {
+  key: string;
+  usage: Usage;
+  call: boolean;
+  /** The call's duration when it is a call that recorded one. */
+  ms: number | null;
+  stopReason: string | undefined;
+}
+
+const newModelRow = (key: string): ModelRow => ({ key, cost: 0, tokens: 0, calls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, timed: 0, ms: 0, failed: 0 });
+
+function dayDraft(days: Map<string, DayDraft>, day: string): DayDraft {
+  let draft = days.get(day);
+  if (!draft) {
+    draft = {
+      cost: 0,
+      calls: 0,
+      models: new Map(),
+      prompts: 0,
+      tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 },
+      costs: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      callTime: new Array<number>(CALL_TIME_BUCKETS).fill(0),
+      failed: 0,
+      aborted: 0,
+    };
+    days.set(day, draft);
+  }
+  return draft;
+}
+
+function addDay(draft: DayDraft, { key, usage, call, ms, stopReason }: Sample): void {
+  const cost = usage.cost.total;
   draft.cost += cost;
-  draft.models.set(key, (draft.models.get(key) ?? 0) + cost);
-  if (call) draft.calls++;
-  days.set(day, draft);
+  draft.tokens.input += usage.input;
+  draft.tokens.output += usage.output;
+  draft.tokens.cacheRead += usage.cacheRead;
+  draft.tokens.cacheWrite += usage.cacheWrite;
+  draft.tokens.reasoning += usage.reasoning ?? 0;
+  draft.costs.input += usage.cost.input;
+  draft.costs.output += usage.cost.output;
+  draft.costs.cacheRead += usage.cost.cacheRead;
+  draft.costs.cacheWrite += usage.cost.cacheWrite;
+  const model = draft.models.get(key) ?? { key, cost: 0, calls: 0, tokens: 0 };
+  model.cost += cost;
+  model.tokens += tokensOf(usage);
+  draft.models.set(key, model);
+  if (!call) return;
+  draft.calls++;
+  model.calls++;
+  if (ms === null) return;
+  const bucket = callTimeBucket(ms);
+  draft.callTime[bucket] = (draft.callTime[bucket] ?? 0) + 1;
+  if (stopReason === "error") draft.failed++;
+  if (stopReason === "aborted") draft.aborted++;
 }
 
 const dayRows = (days: Map<string, DayDraft>): DayRow[] =>
   [...days.entries()]
     .sort((a, b) => a[0].localeCompare(b[0]))
     .slice(-DAYS_MAX)
-    .map(([day, d]) => ({ day, cost: d.cost, calls: d.calls, models: foldDayModels(d.models) }));
+    .map(([day, { models, ...d }]) => ({ day, ...d, models: foldDayModels(models) }));
 
-function foldModels(rows: Map<string, Row>): Row[] {
+function foldModels(rows: Map<string, ModelRow>): ModelRow[] {
   const sorted = [...rows.values()].filter((r) => r.cost > 0 || r.tokens > 0).sort((a, b) => b.cost - a.cost);
   if (sorted.length <= MODELS_MAX) return sorted;
   const head = sorted.slice(0, MODELS_MAX - 1);
-  const other: Row = { key: OTHER_KEY, cost: 0, tokens: 0, calls: 0 };
+  const other = newModelRow(OTHER_KEY);
   for (const r of sorted.slice(MODELS_MAX - 1)) {
     other.cost += r.cost;
     other.tokens += r.tokens;
     other.calls += r.calls;
+    other.input += r.input;
+    other.output += r.output;
+    other.cacheRead += r.cacheRead;
+    other.cacheWrite += r.cacheWrite;
+    other.timed += r.timed;
+    other.ms += r.ms;
+    other.failed += r.failed;
   }
   return [...head, other];
 }
 
-function foldDayModels(models: Map<string, number>): DayRow["models"] {
-  const sorted = [...models.entries()].filter(([, cost]) => cost > 0).sort((a, b) => b[1] - a[1]);
-  const rows = sorted.map(([key, cost]) => ({ key, cost }));
+function foldDayModels(models: Map<string, DayModel>): DayModel[] {
+  const rows = [...models.values()].filter((m) => m.cost > 0 || m.tokens > 0).sort((a, b) => b.cost - a.cost || b.tokens - a.tokens);
   if (rows.length <= DAY_MODELS_MAX) return rows;
-  const other = rows.slice(DAY_MODELS_MAX - 1).reduce((sum, r) => sum + r.cost, 0);
-  return [...rows.slice(0, DAY_MODELS_MAX - 1), { key: OTHER_KEY, cost: other }];
+  const other: DayModel = { key: OTHER_KEY, cost: 0, calls: 0, tokens: 0 };
+  for (const r of rows.slice(DAY_MODELS_MAX - 1)) {
+    other.cost += r.cost;
+    other.calls += r.calls;
+    other.tokens += r.tokens;
+  }
+  return [...rows.slice(0, DAY_MODELS_MAX - 1), other];
+}
+
+function addHour(hours: Map<number, HourRow>, at: number, { usage, call }: Sample): void {
+  const hour = Math.floor(at / HOUR_MS);
+  const row = hours.get(hour) ?? { hour, calls: 0, tokens: 0, cost: 0 };
+  row.tokens += tokensOf(usage);
+  row.cost += usage.cost.total;
+  if (call) row.calls++;
+  hours.set(hour, row);
 }
 
 function newTurn(n: number, at: number, prompt: string): TurnDraft {
@@ -334,11 +456,12 @@ export function buildReport(
 ): UsageReport {
   const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
   const cost: CostParts = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
-  const models = new Map<string, Row>();
+  const models = new Map<string, ModelRow>();
   const series: UsageReport["series"] = [];
   const turns: TurnRow[] = [];
   const days = new Map<string, DayDraft>();
   const utcDays = new Map<string, DayDraft>();
+  const hours = new Map<number, HourRow>();
   const countFrom = opts.countFrom ?? null;
   let turn: TurnDraft | null = null;
   let turnCount = 0;
@@ -365,11 +488,15 @@ export function buildReport(
       if (turn) turns.push(finishTurn(turn));
       turnCount++;
       turn = newTurn(turnCount, at, promptExcerpt(entry.message.content));
+      dayDraft(days, dayKey(at, opts.timeZone)).prompts++;
+      dayDraft(utcDays, dayKey(at, "UTC")).prompts++;
       continue;
     }
     const counted = classify(entry);
     if (!counted) continue;
-    const { usage, key, call } = counted;
+    const { usage, key, call, durationMs, stopReason } = counted;
+    const ms = call && typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0 ? durationMs : null;
+    const sample: Sample = { key, usage, call, ms, stopReason };
 
     tokens.input += usage.input;
     tokens.output += usage.output;
@@ -384,9 +511,18 @@ export function buildReport(
     lastTurnCost += usage.cost.total;
     if (usage.estimated === true && usage.cost.total > 0) estimated = true;
 
-    const row = models.get(key) ?? { key, cost: 0, tokens: 0, calls: 0 };
+    const row = models.get(key) ?? newModelRow(key);
     row.cost += usage.cost.total;
     row.tokens += tokensOf(usage);
+    row.input += usage.input;
+    row.output += usage.output;
+    row.cacheRead += usage.cacheRead;
+    row.cacheWrite += usage.cacheWrite;
+    if (ms !== null) {
+      row.timed++;
+      row.ms += ms;
+      if (stopReason === "error") row.failed++;
+    }
     models.set(key, row);
 
     const current: TurnDraft = turn ?? (turn = newTurn(0, at, ""));
@@ -397,8 +533,9 @@ export function buildReport(
     current.tokens.cacheRead += usage.cacheRead;
     current.tokens.cacheWrite += usage.cacheWrite;
 
-    addDay(days, dayKey(at, opts.timeZone), key, usage.cost.total, call);
-    addDay(utcDays, dayKey(at, "UTC"), key, usage.cost.total, call);
+    addDay(dayDraft(days, dayKey(at, opts.timeZone)), sample);
+    addDay(dayDraft(utcDays, dayKey(at, "UTC")), sample);
+    addHour(hours, at, sample);
 
     if (call) {
       row.calls++;
@@ -430,6 +567,7 @@ export function buildReport(
     turns: turns.slice(-TURNS_MAX),
     days: dayRows(days),
     utcDays: dayRows(utcDays),
+    hours: [...hours.values()].sort((a, b) => a.hour - b.hour).slice(-HOURS_MAX),
     running: false,
     budget: null,
     stoppedAt: null,

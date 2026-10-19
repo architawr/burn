@@ -1,12 +1,14 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { budgetState } from "../../../src/budget.js";
 import { formatAmount, formatBudget, median, modelName } from "../../../src/format.js";
-import { type DayRow, dayKey, OTHER_KEY, TOOLS_KEY, type UsageReport } from "../../../src/report.js";
+import { CALL_TIME_BUCKETS, type DayRow, dayKey, type ModelRow, OTHER_KEY, TOOLS_KEY, type UsageReport } from "../../../src/report.js";
 import type { BurnAlert } from "../alerts.js";
-import { REPORT_PREFIX } from "../keys.js";
+import { harnessName } from "../harnesses.js";
+import { REPORT_PREFIX, SPEND_PANELS_KEY } from "../keys.js";
 import { type Stored, storedSchema } from "../schema.js";
-import type { SpendOutput, SpendRange, SpendZone } from "./contract.js";
+import { SPEND_PANELS, type SpendMetric, type SpendOutput, type SpendPanel, type SpendPanels, type SpendRange, type SpendZone } from "./contract.js";
 import { dayDate, localDays, RANGE_DAYS } from "./days.js";
+import { activityGrid, addUsage, callTimeQuantile, emptyUsage, type Usage } from "./tally.js";
 
 export interface SpendDeps {
   bb: BbPluginApi;
@@ -30,15 +32,18 @@ const META_TTL_MS = 60_000;
 const DAY_MS = 86_400_000;
 const TOP_THREADS = 10;
 const CHART_MODELS = 4;
+const MODEL_ROWS_MAX = 10;
 /** `experimental_listDescendants` takes 1–200 ids per call. */
 const SDK_BATCH = 200;
 const SDK_CONCURRENCY = 8;
 const UNTITLED = "Untitled thread";
 const UNKNOWN_PROJECT = "Unknown project";
+const KINDS = ["input", "output", "cacheRead", "cacheWrite"] as const;
 
 interface ThreadMeta {
   title: string;
   projectId: string;
+  providerId: string;
   childCount: number;
 }
 
@@ -49,13 +54,51 @@ export interface Entry {
 
 interface Counted extends Entry {
   meta: ThreadMeta;
-  rangeCost: number;
-  calls: number;
+  /** Use over the chosen days. */
+  used: Usage;
+}
+
+/** What the Models table's ratios are read from: a model's use over the whole life of the threads in range. */
+type Life = Omit<ModelRow, "key" | "cost" | "tokens">;
+
+interface ModelSum {
+  key: string;
+  providerId: string;
+  used: Usage;
+  estimated: boolean;
+}
+
+/** The counted threads' use over the chosen days. */
+interface RangeSums {
+  perDay: Map<string, { used: Usage; models: Map<string, Usage> }>;
+  chart: Map<string, Usage>;
+  /** Keyed by provider id and model key, so one model under two harnesses is two rows; a report's own Other is OTHER_KEY. */
+  models: Map<string, ModelSum>;
+  life: Map<string, Life>;
+  mix: SpendOutput["mix"];
+  callTime: number[];
+  failed: number;
+  aborted: number;
+  prompts: number;
 }
 
 const add = (map: Map<string, number>, key: string, cost: number): void => {
   map.set(key, (map.get(key) ?? 0) + cost);
 };
+
+/** The Usage held under `key`, created empty the first time. */
+function usageAt<K>(map: Map<K, Usage>, key: K): Usage {
+  let used = map.get(key);
+  if (!used) {
+    used = emptyUsage();
+    map.set(key, used);
+  }
+  return used;
+}
+
+const kindTokens = (t: DayRow["tokens"]): number => t.input + t.output + t.cacheRead + t.cacheWrite;
+const dayUsage = (d: DayRow): Usage => ({ cost: d.cost, tokens: kindTokens(d.tokens), calls: d.calls });
+const valuesIn = (map: Map<string, Usage>, metric: SpendMetric): Map<string, number> => new Map([...map].map(([key, used]) => [key, used[metric]]));
 
 function chunks<T>(items: readonly T[], size: number): T[][] {
   const out: T[][] = [];
@@ -96,9 +139,9 @@ async function readReports(bb: BbPluginApi): Promise<Entry[]> {
   });
 }
 
-/** The costliest keys, Other last; past `max` keys, the rest fold into Other. */
-function topKeys(costs: Map<string, number>, max: number): { keys: string[]; fold: (key: string) => string } {
-  const sorted = [...costs.entries()]
+/** The biggest keys, Other last; past `max` keys, the rest fold into Other. */
+function topKeys(values: Map<string, number>, max: number): { keys: string[]; fold: (key: string) => string } {
+  const sorted = [...values.entries()]
     .filter(([, c]) => c > 0)
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .map(([k]) => k);
@@ -125,8 +168,119 @@ function topModel(models: Map<string, number>, report: UsageReport): string | nu
   return key === undefined ? null : modelName(key);
 }
 
+function sumRange(counted: readonly Counted[], dayList: readonly string[], tz: SpendZone): RangeSums {
+  const sums: RangeSums = {
+    perDay: new Map(dayList.map((d) => [d, { used: emptyUsage(), models: new Map<string, Usage>() }])),
+    chart: new Map(),
+    models: new Map(),
+    life: new Map(),
+    mix: { tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 }, costs: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
+    callTime: new Array<number>(CALL_TIME_BUCKETS).fill(0),
+    failed: 0,
+    aborted: 0,
+    prompts: 0,
+  };
+  for (const row of counted) {
+    const { providerId } = row.meta;
+    for (const d of daysIn(row.report, tz)) {
+      const slot = sums.perDay.get(d.day);
+      if (!slot) continue;
+      addUsage(slot.used, dayUsage(d));
+      sums.prompts += d.prompts;
+      for (const k of KINDS) {
+        sums.mix.tokens[k] += d.tokens[k];
+        sums.mix.costs[k] += d.costs[k];
+      }
+      sums.mix.tokens.reasoning += d.tokens.reasoning;
+      d.callTime.forEach((n, i) => {
+        sums.callTime[i] = (sums.callTime[i] ?? 0) + n;
+      });
+      sums.failed += d.failed;
+      sums.aborted += d.aborted;
+      for (const m of d.models) {
+        addUsage(usageAt(slot.models, m.key), m);
+        addUsage(usageAt(sums.chart, m.key), m);
+        const key = m.key === OTHER_KEY ? OTHER_KEY : `${providerId}\n${m.key}`;
+        const stat = sums.models.get(key) ?? { key: m.key, providerId, used: emptyUsage(), estimated: false };
+        addUsage(stat.used, m);
+        stat.estimated ||= row.report.estimated;
+        sums.models.set(key, stat);
+      }
+    }
+    for (const m of row.report.byModel) {
+      const key = `${providerId}\n${m.key}`;
+      const life = sums.life.get(key) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, calls: 0, timed: 0, ms: 0, failed: 0 };
+      life.input += m.input;
+      life.output += m.output;
+      life.cacheRead += m.cacheRead;
+      life.cacheWrite += m.cacheWrite;
+      life.calls += m.calls;
+      life.timed += m.timed;
+      life.ms += m.ms;
+      life.failed += m.failed;
+      sums.life.set(key, life);
+    }
+  }
+  return sums;
+}
+
+const NO_RATIOS = { cacheHitPct: null, avgCallMs: null, outputPerSec: null, failedPct: null };
+
+function ratios(life: Life | undefined): Pick<SpendOutput["modelStats"][number], keyof typeof NO_RATIOS> {
+  if (!life) return NO_RATIOS;
+  const prompt = life.input + life.cacheRead + life.cacheWrite;
+  return {
+    cacheHitPct: prompt > 0 ? (life.cacheRead / prompt) * 100 : null,
+    avgCallMs: life.timed > 0 ? life.ms / life.timed : null,
+    // Only when every call was timed, so untimed calls' output does not inflate the rate.
+    outputPerSec: life.timed === life.calls && life.ms > 0 ? life.output / (life.ms / 1000) : null,
+    failedPct: life.timed > 0 ? (life.failed / life.timed) * 100 : null,
+  };
+}
+
+/** The Models table: the top MODEL_ROWS_MAX by `metric`, the rest and any report's own Other folded into one Other row. */
+function modelStats(sums: RangeSums, metric: SpendMetric): SpendOutput["modelStats"] {
+  const named = [...sums.models.entries()]
+    .filter(([key]) => key !== OTHER_KEY)
+    .sort(([ka, a], [kb, b]) => b.used[metric] - a.used[metric] || ka.localeCompare(kb));
+  const rows: SpendOutput["modelStats"] = named
+    .slice(0, MODEL_ROWS_MAX)
+    .map(([key, m]) => ({ key: m.key, harness: harnessName(m.providerId), ...m.used, ...ratios(sums.life.get(key)), estimated: m.estimated }));
+  const rest = named.slice(MODEL_ROWS_MAX).map(([, m]) => m);
+  const own = sums.models.get(OTHER_KEY);
+  if (own) rest.push(own);
+  if (rest.length > 0) {
+    const used = emptyUsage();
+    for (const m of rest) addUsage(used, m.used);
+    rows.push({ key: OTHER_KEY, harness: null, ...used, ...NO_RATIOS, estimated: rest.some((m) => m.estimated) });
+  }
+  return rows;
+}
+
+/** The chart's days and models: the top CHART_MODELS by `metric`, each day's slices those with a value in it. */
+function chartOf(sums: RangeSums, dayList: readonly string[], metric: SpendMetric): Pick<SpendOutput, "days" | "models"> {
+  const { keys, fold } = topKeys(valuesIn(sums.chart, metric), CHART_MODELS);
+  const days = dayList.map((day) => {
+    const slot = sums.perDay.get(day);
+    const folded = new Map<string, Usage>();
+    if (slot) for (const [key, used] of slot.models) addUsage(usageAt(folded, fold(key)), used);
+    const models = keys.flatMap((key) => {
+      const used = folded.get(key);
+      return used !== undefined && used[metric] > 0 ? [{ key, ...used }] : [];
+    });
+    return { day, ...(slot?.used ?? emptyUsage()), models };
+  });
+  const folded = new Map<string, Usage>();
+  for (const [key, used] of sums.chart) addUsage(usageAt(folded, fold(key)), used);
+  return { days, models: keys.map((key) => ({ key, ...(folded.get(key) ?? emptyUsage()) })) };
+}
+
+const isPanel = (v: unknown): v is SpendPanel => typeof v === "string" && (SPEND_PANELS as readonly string[]).includes(v);
+
 export function createSpendHandlers(deps: SpendDeps): {
-  spend(input: { range: SpendRange; projectId: string | null; tz?: SpendZone }): Promise<SpendOutput>;
+  spend(input: { range: SpendRange; projectId: string | null; tz?: SpendZone; metric?: SpendMetric }): Promise<SpendOutput>;
+  spendPanels(input: Record<string, never>): Promise<SpendPanels>;
+  setSpendPanels(input: SpendPanels): Promise<SpendPanels>;
 } {
   const now = deps.now ?? Date.now;
   const { bb } = deps;
@@ -140,7 +294,7 @@ export function createSpendHandlers(deps: SpendDeps): {
     return projects.names;
   }
 
-  /** Title, project and child count of each thread that still exists; missing threads are left out. */
+  /** Title, project, harness and child count of each thread that still exists; missing threads are left out. */
   async function threadMeta(ids: readonly string[]): Promise<Map<string, ThreadMeta>> {
     const at = now();
     const stale = ids.filter((id) => {
@@ -161,7 +315,7 @@ export function createSpendHandlers(deps: SpendDeps): {
     const fresh = new Map(
       got.map((t): [string, ThreadMeta] => [
         t.id,
-        { title: t.title || t.titleFallback || UNTITLED, projectId: t.projectId, childCount: children.get(t.id) ?? 0 },
+        { title: t.title || t.titleFallback || UNTITLED, projectId: t.projectId, providerId: t.providerId, childCount: children.get(t.id) ?? 0 },
       ]),
     );
     for (const id of stale) threads.set(id, { at, meta: fresh.get(id) ?? null });
@@ -176,7 +330,7 @@ export function createSpendHandlers(deps: SpendDeps): {
   }
 
   return {
-    async spend({ range, projectId, tz = "local" }) {
+    async spend({ range, projectId, tz = "local", metric = "cost" }) {
       const today = now();
       const length = RANGE_DAYS[range];
       const dayList = localDays(today, length, 0, tz);
@@ -194,9 +348,8 @@ export function createSpendHandlers(deps: SpendDeps): {
 
       const options = new Map<string, string>();
       const counted: Counted[] = [];
-      const byModel = new Map<string, number>();
-      const perDay = new Map(dayList.map((d) => [d, { cost: 0, models: new Map<string, number>() }]));
       let previousTotal = 0;
+      let previousTokens = 0;
       let reportedThreads = 0;
       for (const entry of entries) {
         const meta = metas.get(entry.threadId);
@@ -205,89 +358,111 @@ export function createSpendHandlers(deps: SpendDeps): {
         const name = names.get(meta.projectId);
         if (name !== undefined) options.set(meta.projectId, name);
         if (projectId !== null && meta.projectId !== projectId) continue;
-        let rangeCost = 0;
-        let calls = 0;
+        const used = emptyUsage();
         for (const d of daysIn(entry.report, tz)) {
-          if (before.has(d.day)) previousTotal += d.cost;
-          const slot = perDay.get(d.day);
-          if (!slot) continue;
-          rangeCost += d.cost;
-          calls += d.calls;
-          slot.cost += d.cost;
-          for (const m of d.models) {
-            add(slot.models, m.key, m.cost);
-            add(byModel, m.key, m.cost);
+          if (before.has(d.day)) {
+            previousTotal += d.cost;
+            previousTokens += kindTokens(d.tokens);
           }
+          if (inRange.has(d.day)) addUsage(used, dayUsage(d));
         }
-        if (rangeCost > 0) counted.push({ ...entry, meta, rangeCost, calls });
+        // Token-only harnesses, and threads whose only calls failed with no usage, count too.
+        if (used.cost > 0 || used.tokens > 0 || used.calls > 0) counted.push({ ...entry, meta, used });
       }
 
-      const { keys, fold } = topKeys(byModel, CHART_MODELS);
-      const days: SpendOutput["days"] = dayList.map((day) => {
-        const slot = perDay.get(day) ?? { cost: 0, models: new Map<string, number>() };
-        const folded = new Map<string, number>();
-        for (const [key, cost] of slot.models) add(folded, fold(key), cost);
-        const models = keys.flatMap((key) => {
-          const cost = folded.get(key) ?? 0;
-          return cost > 0 ? [{ key, cost }] : [];
-        });
-        return { day, cost: slot.cost, models };
-      });
-      const folded = new Map<string, number>();
-      for (const [key, cost] of byModel) add(folded, fold(key), cost);
-      const models = keys.map((key) => ({ key, cost: folded.get(key) ?? 0 }));
+      const sums = sumRange(counted, dayList, tz);
+      const { days, models } = chartOf(sums, dayList, metric);
 
       const budgets = await Promise.all(counted.map((row) => deps.budgetOf(row.threadId, row.report)));
       const overBudgetCount = counted.filter((row, i) => budgetState(row.report.cost.total, budgets[i]) === "over").length;
 
-      const byProject = new Map<string, number>();
-      for (const row of counted) add(byProject, row.meta.projectId, row.rangeCost);
+      const byProject = new Map<string, Usage>();
+      const byHarness = new Map<string, { used: Usage; estimated: boolean }>();
+      for (const row of counted) {
+        addUsage(usageAt(byProject, row.meta.projectId), row.used);
+        const harness = byHarness.get(row.meta.providerId) ?? { used: emptyUsage(), estimated: false };
+        addUsage(harness.used, row.used);
+        harness.estimated ||= row.report.estimated;
+        byHarness.set(row.meta.providerId, harness);
+      }
       const projectRows: SpendOutput["projects"] = [...byProject.entries()]
-        .map(([id, cost]) => {
+        .map(([id, used]) => {
           const name = names.get(id);
-          return name === undefined ? { projectId: null, name: UNKNOWN_PROJECT, cost } : { projectId: id, name, cost };
+          return name === undefined ? { projectId: null, name: UNKNOWN_PROJECT, ...used } : { projectId: id, name, ...used };
         })
-        .sort((a, b) => b.cost - a.cost || a.name.localeCompare(b.name));
+        .sort((a, b) => b[metric] - a[metric] || a.name.localeCompare(b.name));
+      const harnesses: SpendOutput["harnesses"] = [...byHarness.entries()]
+        .map(([providerId, h]) => ({ providerId, name: harnessName(providerId), ...h.used, estimated: h.estimated }))
+        .sort((a, b) => b[metric] - a[metric] || a.name.localeCompare(b.name));
 
       const order = counted.map((row, i) => ({ row, budget: budgets[i] ?? null }));
-      order.sort((a, b) => b.row.rangeCost - a.row.rangeCost || b.row.report.cost.total - a.row.report.cost.total || a.row.threadId.localeCompare(b.row.threadId));
+      order.sort(
+        (a, b) =>
+          b.row.used[metric] - a.row.used[metric] ||
+          b.row.report.cost.total - a.row.report.cost.total ||
+          a.row.threadId.localeCompare(b.row.threadId),
+      );
       const top: SpendOutput["threads"] = order.slice(0, TOP_THREADS).map(({ row, budget }) => ({
         threadId: row.threadId,
         title: row.meta.title,
         projectName: names.get(row.meta.projectId) ?? null,
         model: topModel(rangeModels(daysIn(row.report, tz), inRange), row.report),
+        harness: harnessName(row.meta.providerId),
         childCount: row.meta.childCount,
-        calls: row.calls,
-        rangeCost: row.rangeCost,
+        calls: row.used.calls,
+        tokens: row.used.tokens,
+        rangeCost: row.used.cost,
         total: row.report.cost.total,
         budget,
         running: row.report.running,
         estimated: row.report.estimated,
       }));
 
-      const total = counted.reduce((sum, row) => sum + row.rangeCost, 0);
-      const calls = counted.reduce((sum, row) => sum + row.calls, 0);
-      let cacheRead = 0;
-      let prompt = 0;
-      for (const { report } of counted) {
-        cacheRead += report.tokens.cacheRead;
-        prompt += report.tokens.input + report.tokens.cacheRead + report.tokens.cacheWrite;
-      }
+      const totals = emptyUsage();
+      for (const row of counted) addUsage(totals, row.used);
+      // Only threads that cost something, so a harness that records no cost cannot pull the median or the per-call cost down.
+      const priced = counted.filter((row) => row.used.cost > 0);
+      const pricedCalls = priced.reduce((sum, row) => sum + row.used.calls, 0);
+      const mixTokens = sums.mix.tokens;
+      const prompt = mixTokens.input + mixTokens.cacheRead + mixTokens.cacheWrite;
 
       return {
         range,
         tz,
+        metric,
         days,
-        total,
+        total: totals.cost,
         previousTotal,
+        tokens: totals.tokens,
+        previousTokens,
+        calls: totals.calls,
+        prompts: sums.prompts,
+        runningCount: counted.filter((row) => row.report.running).length,
         threadCount: counted.length,
         overBudgetCount,
-        medianThreadCost: median(counted.map((row) => row.rangeCost)),
-        perCall: calls > 0 ? total / calls : null,
-        cacheHitPct: prompt > 0 ? (cacheRead / prompt) * 100 : null,
+        medianThreadCost: median(priced.map((row) => row.used.cost)),
+        perCall: pricedCalls > 0 ? totals.cost / pricedCalls : null,
+        cacheHitPct: prompt > 0 ? (mixTokens.cacheRead / prompt) * 100 : null,
+        mix: sums.mix,
+        callTime: {
+          buckets: sums.callTime,
+          timed: sums.callTime.reduce((sum, n) => sum + n, 0),
+          failed: sums.failed,
+          aborted: sums.aborted,
+          p50: callTimeQuantile(sums.callTime, 0.5),
+          p90: callTimeQuantile(sums.callTime, 0.9),
+        },
+        activity: activityGrid(
+          counted.flatMap((row) => row.report.hours),
+          dayList,
+          tz,
+          metric,
+        ),
         threads: top,
         projects: projectRows,
         models,
+        modelStats: modelStats(sums, metric),
+        harnesses,
         projectOptions: [...options.entries()]
           .map(([id, name]) => ({ projectId: id, name }))
           .sort((a, b) => a.name.localeCompare(b.name)),
@@ -295,6 +470,19 @@ export function createSpendHandlers(deps: SpendDeps): {
         reportedThreads,
         estimated: counted.some((row) => row.report.estimated),
       };
+    },
+
+    async spendPanels() {
+      const raw = await bb.storage.kv.get<unknown>(SPEND_PANELS_KEY);
+      const list = typeof raw === "object" && raw !== null ? (raw as { hidden?: unknown }).hidden : undefined;
+      // A newer Burn may have stored panels this one does not know.
+      return { hidden: Array.isArray(list) ? [...new Set(list.filter(isPanel))] : [] };
+    },
+
+    async setSpendPanels({ hidden }) {
+      const panels = { hidden: [...new Set(hidden)] };
+      await bb.storage.kv.set(SPEND_PANELS_KEY, panels);
+      return panels;
     },
   };
 }

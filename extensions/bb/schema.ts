@@ -1,8 +1,10 @@
 import { z } from "zod";
 import {
   CALL_COSTS_MAX,
+  CALL_TIME_BUCKETS,
   DAY_MODELS_MAX,
   DAYS_MAX,
+  HOURS_MAX,
   MODELS_MAX,
   PROMPT_MAX,
   SERIES_MAX,
@@ -19,6 +21,10 @@ const count = z.number().int().nonnegative();
 const key = z.string().max(200);
 const cost = z.object({ input: amount, output: amount, cacheRead: amount, cacheWrite: amount, total: amount });
 const tokenParts = z.object({ input: amount, output: amount, cacheRead: amount, cacheWrite: amount });
+const tokenCounts = tokenParts.extend({ reasoning: amount });
+const kindCosts = cost.omit({ total: true });
+const ZERO_TOKENS = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
+const ZERO_COSTS = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
 const turnSchema = z.object({
   n: count,
@@ -38,7 +44,17 @@ const daySchema = z.object({
   day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   cost: amount,
   calls: count,
-  models: z.array(z.object({ key, cost: amount })).max(DAY_MODELS_MAX),
+  // Burn 0.2 reports carry none of what follows.
+  models: z.array(z.object({ key, cost: amount, calls: count.default(0), tokens: amount.default(0) })).max(DAY_MODELS_MAX),
+  prompts: count.default(0),
+  tokens: tokenCounts.default(() => ({ ...ZERO_TOKENS })),
+  costs: kindCosts.default(() => ({ ...ZERO_COSTS })),
+  callTime: z
+    .array(count)
+    .length(CALL_TIME_BUCKETS)
+    .default(() => new Array<number>(CALL_TIME_BUCKETS).fill(0)),
+  failed: count.default(0),
+  aborted: count.default(0),
 });
 
 const common = {
@@ -46,11 +62,28 @@ const common = {
   updatedAt: amount,
   calls: count,
   lastTurnCost: amount,
-  tokens: z.object({ input: amount, output: amount, cacheRead: amount, cacheWrite: amount, reasoning: amount }),
+  tokens: tokenCounts,
   cost,
   cacheHitPct: z.number().finite().nullable(),
   context: z.object({ tokens: amount.nullable(), window: amount, percent: z.number().finite().nullable() }).nullable(),
-  byModel: z.array(z.object({ key, cost: amount, tokens: amount, calls: count })).max(MODELS_MAX),
+  byModel: z
+    .array(
+      z.object({
+        key,
+        cost: amount,
+        tokens: amount,
+        calls: count,
+        // Burn 0.2 reports carry none of what follows.
+        input: amount.default(0),
+        output: amount.default(0),
+        cacheRead: amount.default(0),
+        cacheWrite: amount.default(0),
+        timed: count.default(0),
+        ms: amount.default(0),
+        failed: count.default(0),
+      }),
+    )
+    .max(MODELS_MAX),
 };
 
 /** What Burn 0.1 extensions send; upgraded to version 2 with empty turns and days. */
@@ -69,6 +102,11 @@ const v2Schema = z.object({
   days: z.array(daySchema).max(DAYS_MAX),
   // Burn 0.2 extensions send no UTC days.
   utcDays: z.array(daySchema).max(DAYS_MAX).default([]),
+  // Burn 0.2 extensions send none.
+  hours: z
+    .array(z.object({ hour: count, calls: count, tokens: amount, cost: amount }))
+    .max(HOURS_MAX)
+    .default(() => []),
   running: z.boolean(),
   budget: z.number().finite().positive().nullable(),
   stoppedAt: amount.nullable(),
@@ -91,6 +129,7 @@ export const usageReportSchema: z.ZodType<UsageReport, unknown> = z.union([
       turns: [],
       days: [],
       utcDays: [],
+      hours: [],
       running: false,
       budget: null,
       stoppedAt: null,

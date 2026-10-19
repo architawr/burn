@@ -5,6 +5,7 @@ import type { ExperimentalHostWatchListener } from "@get-bb/plugin-sdk";
 import { createFakePluginHost, type ExperimentalFakeHostRpcCall, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { HOST_BATCH } from "../../extensions/bb/host/contract.js";
 import { createHostEntry } from "../../extensions/bb/host/entry.js";
 import { sessionFile } from "../../extensions/bb/host/pi-sessions.js";
 import type { EventRow } from "../../extensions/bb/ledger.js";
@@ -104,7 +105,7 @@ function setup(threads: Record<string, Thread>, opts: { offline?: string[] } = {
 }
 
 describe("createReportSource", () => {
-  it("asks each thread's host for its report, in batches of 40, with its session ids and the server's zone", async () => {
+  it(`asks each thread's host for its report, in batches of ${HOST_BATCH}, with its session ids and the server's zone`, async () => {
     const threads: Record<string, Thread> = { [id(100)]: { host: B, sessions: ["pi_old", "pi_new"] } };
     for (let n = 0; n < 45; n++) threads[id(n)] = { host: A };
     const s = setup(threads);
@@ -112,7 +113,7 @@ describe("createReportSource", () => {
     const got = await s.source.reportsOf(Object.keys(threads));
     expect(got.size).toBe(46);
     expect([...got.values()].every((r) => r.source === "log")).toBe(true);
-    expect(s.asked(A).map((batch) => batch.length)).toEqual([40, 5]);
+    expect(s.asked(A).map((batch) => batch.length)).toEqual([HOST_BATCH, 45 - HOST_BATCH]);
     expect(s.asked(B)).toEqual([[id(100)]]);
     const input = s.calls.find((c) => c.hostId === B)?.input;
     expect(input).toEqual({

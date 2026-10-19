@@ -6,7 +6,7 @@ import plugin, { SETTINGS } from "../../extensions/bb/server.js";
 import * as spendServer from "../../extensions/bb/spend/server.js";
 import type { EntryLike, UsageReport } from "../../src/report.js";
 import { buildReport, dayKey } from "../../src/report.js";
-import { assistant, sampleReport, toolResult, user } from "../helpers.js";
+import { assistant, dayRow, sampleReport, toolResult, user } from "../helpers.js";
 import { CODEX_1, CODEX_1_2, CODEX_2, listEvents, requestEvent, totals, usageEvent } from "./fixtures.js";
 
 const THREAD = "thr_aaaaaaaa";
@@ -182,7 +182,9 @@ describe("POST /usage", () => {
 
   it("rejects an oversize body, bad JSON and an invalid report", async () => {
     const s = await setup();
-    expect((await s.post("x".repeat(128 * 1024 + 1))).status).toBe(413);
+    expect((await s.post("x".repeat(240 * 1024 + 1))).status).toBe(413);
+    // 100,000 characters but 300,000 UTF-8 bytes: the limit is on bytes, as bb's KV limit is.
+    expect((await s.post("€".repeat(100_000))).status).toBe(413);
     expect((await s.post("{nope")).status).toBe(400);
     expect((await s.post({ threadId: THREAD, sentAt: 1, report: { version: 1 } })).status).toBe(400);
     expect(s.signals()).toEqual([]);
@@ -470,7 +472,7 @@ describe("costs, overBudget and family", () => {
       ],
     });
     s.harness.sdk.stub("projects.list", async () => []);
-    await s.post(envelope(1, { ...costOf(2), days: [{ day: dayKey(Date.now()), cost: 2, calls: 1, models: [] }] }));
+    await s.post(envelope(1, { ...costOf(2), days: [dayRow(dayKey(Date.now()), 2, {}, 1)] }));
     const spend = await s.rpc<{ total: number; threadCount: number }>("spend", { range: "today", projectId: null });
     expect(spend.threadCount).toBe(2);
     expect(spend.total).toBeCloseTo(5);

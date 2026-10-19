@@ -66,3 +66,23 @@ export function CheckIcon({ className }: { className?: string }): ReactNode {
     </Glyph>
   );
 }
+
+// After Lucide's sliders-horizontal and eye-off, as the approved Burn page mock draws them.
+export function SlidersIcon({ className }: { className?: string }): ReactNode {
+  return (
+    <Glyph className={className}>
+      <path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0" />
+      <circle cx="16" cy="6" r="2" />
+      <circle cx="10" cy="12" r="2" />
+      <circle cx="18" cy="18" r="2" />
+    </Glyph>
+  );
+}
+
+export function EyeOffIcon({ className }: { className?: string }): ReactNode {
+  return (
+    <Glyph className={className}>
+      <path d="M10.7 5.1A10.4 10.4 0 0 1 12 5c7 0 10 7 10 7a13.2 13.2 0 0 1-1.7 2.7M6.6 6.6A13.5 13.5 0 0 0 2 12s3 7 10 7a9.7 9.7 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20" />
+    </Glyph>
+  );
+}

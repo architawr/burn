@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cumulative, formatDelta, formatTokens, formatUsd, sparkline } from "../src/format.js";
+import { cumulative, formatCallTime, formatDelta, formatTokenCount, formatTokens, formatUsd, sparkline } from "../src/format.js";
 
 describe("formatUsd", () => {
   it("formats the boundaries", () => {
@@ -8,6 +8,23 @@ describe("formatUsd", () => {
     expect(formatUsd(0.31)).toBe("$0.31");
     expect(formatUsd(4.8231)).toBe("$4.82");
     expect(formatUsd(123.456)).toBe("$123.46");
+  });
+});
+
+describe("formatTokenCount", () => {
+  it("reads like formatTokens up to a billion, then in billions", () => {
+    expect(formatTokenCount(999)).toBe("999");
+    expect(formatTokenCount(13_400_000)).toBe("13M");
+    expect(formatTokenCount(3_640_000_000)).toBe("3.64B");
+    expect(formatTokenCount(12_300_000_000)).toBe("12.3B");
+  });
+});
+
+describe("formatCallTime", () => {
+  it("gives one decimal under ten seconds, then whole seconds and minutes", () => {
+    expect(formatCallTime(6_758)).toBe("6.8s");
+    expect(formatCallTime(27_379)).toBe("27s");
+    expect(formatCallTime(65_000)).toBe("1m 05s");
   });
 });
 

@@ -1,6 +1,19 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { buildReport, dayKey, type EntryLike, forkedAt, PROMPT_MAX, promptExcerpt, slimEntry, TURNS_MAX } from "../src/report.js";
+import {
+  buildReport,
+  CALL_TIME_BUCKETS,
+  callTimeBucket,
+  dayKey,
+  type EntryLike,
+  forkedAt,
+  HOUR_MS,
+  HOURS_MAX,
+  PROMPT_MAX,
+  promptExcerpt,
+  slimEntry,
+  TURNS_MAX,
+} from "../src/report.js";
 import { assistant, compaction, toolResult, usageEntry, user } from "./helpers.js";
 
 const at = (iso: string) => <T extends { timestamp: string }>(entry: T): T => ({ ...entry, timestamp: iso });
@@ -133,7 +146,7 @@ describe("buildReport", () => {
       [dayKey(Date.parse(a.timestamp)), 1, 1],
       [dayKey(Date.parse(b.timestamp)), 2, 1],
     ]);
-    expect(r.days[1]?.models).toEqual([{ key: "p/m2", cost: 2 }]);
+    expect(r.days[1]?.models).toEqual([{ key: "p/m2", cost: 2, calls: 1, tokens: 150 }]);
   });
 
   it("starts as a v2 report that is not running and has no budget", () => {
@@ -146,6 +159,7 @@ describe("buildReport", () => {
       turns: [],
       days: [],
       utcDays: [],
+      hours: [],
     });
   });
 
@@ -179,7 +193,98 @@ describe("buildReport", () => {
       ["2026-10-18", 1, 1],
       ["2026-10-19", 2, 1],
     ]);
-    expect(r.utcDays[1]?.models).toEqual([{ key: "p/m1", cost: 2 }]);
+    expect(r.utcDays[1]?.models).toEqual([{ key: "p/m1", cost: 2, calls: 1, tokens: 150 }]);
+  });
+});
+
+describe("buildReport usage detail", () => {
+  const call = (ms: number | undefined, stopReason = "stop") => assistant(1, "m1", {}, "p", [], ms === undefined ? { stopReason } : { durationMs: ms, stopReason });
+
+  it("counts prompts on their local and UTC days, and keeps a day that had only a prompt", () => {
+    const r = buildReport(
+      [
+        at("2026-10-17T12:00:00.000Z")(user()),
+        at("2026-10-18T12:00:00.000Z")(user()),
+        at("2026-10-18T12:01:00.000Z")(assistant(1)),
+        at("2026-10-18T12:02:00.000Z")(user()),
+      ],
+      null,
+      { timeZone: "UTC" },
+    );
+    expect(r.days.map((d) => [d.day, d.prompts, d.cost, d.calls])).toEqual([
+      ["2026-10-17", 1, 0, 0],
+      ["2026-10-18", 2, 1, 1],
+    ]);
+    expect(r.utcDays.map((d) => [d.day, d.prompts])).toEqual([
+      ["2026-10-17", 1],
+      ["2026-10-18", 2],
+    ]);
+    expect(r.days[0]).toMatchObject({ models: [], failed: 0, aborted: 0, callTime: new Array(CALL_TIME_BUCKETS).fill(0) });
+  });
+
+  it("splits each day's tokens, with reasoning, and its cost by kind", () => {
+    const a = assistant(1, "m1", { input: 10, output: 20, cacheRead: 30, cacheWrite: 40 });
+    const reasoned = { ...a, message: { ...a.message, usage: { ...a.message.usage, reasoning: 5 } } };
+    const r = buildReport([user(), reasoned, toolResult(2)], null);
+    expect(r.days[0]?.tokens).toEqual({ input: 110, output: 70, cacheRead: 30, cacheWrite: 40, reasoning: 5 });
+    expect(r.days[0]?.costs).toEqual({ input: 1.5, output: 0.75, cacheRead: 0.375, cacheWrite: 0.375 });
+    expect(r.utcDays[0]?.tokens).toEqual(r.days[0]?.tokens);
+    expect(r.byModel.find((m) => m.key === "p/m1")).toMatchObject({ input: 10, output: 20, cacheRead: 30, cacheWrite: 40, tokens: 100 });
+  });
+
+  it("puts call times in doubling buckets from one second", () => {
+    expect([0, 999, 1000, 1999, 2000, 127_999, 128_000, 200_000].map(callTimeBucket)).toEqual([0, 0, 1, 1, 2, 7, 8, 8]);
+    expect(CALL_TIME_BUCKETS).toBe(9);
+    const r = buildReport([user(), call(999), call(1000), call(200_000)], null);
+    expect(r.days[0]?.callTime).toEqual([1, 1, 0, 0, 0, 0, 0, 0, 1]);
+  });
+
+  it("leaves a call without a usable duration untimed and never failed", () => {
+    const r = buildReport([user(), call(undefined, "error"), call(-5, "error"), call(Number.POSITIVE_INFINITY, "aborted")], null);
+    expect(r.days[0]).toMatchObject({ calls: 3, failed: 0, aborted: 0, callTime: new Array(CALL_TIME_BUCKETS).fill(0) });
+    expect(r.byModel[0]).toMatchObject({ calls: 3, timed: 0, ms: 0, failed: 0 });
+  });
+
+  it("counts timed calls that failed or were stopped, on the day and on the model", () => {
+    const r = buildReport([user(), call(999), call(5000, "aborted"), call(200_000, "error"), call(0, "toolUse"), usageEntry(1)], null);
+    expect(r.days[0]).toMatchObject({ calls: 4, failed: 1, aborted: 1, callTime: [2, 0, 0, 1, 0, 0, 0, 0, 1] });
+    expect(r.byModel.find((m) => m.key === "p/m1")).toMatchObject({ calls: 4, timed: 4, ms: 999 + 5000 + 200_000, failed: 1 });
+  });
+
+  it("keeps a model with tokens and no cost in the day's models, and folds the tail into Other", () => {
+    const free = buildReport([user(), assistant(0, "free", { input: 10, output: 0 }), assistant(1, "paid"), assistant(0, "none", { input: 0, output: 0 })], null);
+    expect(free.days[0]?.models).toEqual([
+      { key: "p/paid", cost: 1, calls: 1, tokens: 150 },
+      { key: "p/free", cost: 0, calls: 1, tokens: 10 },
+    ]);
+    const many = buildReport([user(), ...[5, 4, 3, 2, 1].map((c) => assistant(c, `m${c}`))], null);
+    expect(many.days[0]?.models.at(-1)).toEqual({ key: "Other", cost: 3, calls: 2, tokens: 300 });
+  });
+
+  it("sums Other's timing and kinds in byModel", () => {
+    const entries: EntryLike[] = [user()];
+    for (let i = 1; i <= 9; i++) entries.push(assistant(i, `m${i}`, {}, "p", [], { durationMs: 1000, stopReason: i === 1 ? "error" : "stop" }));
+    const other = buildReport(entries, null).byModel.at(-1);
+    expect(other).toMatchObject({ key: "Other", calls: 2, timed: 2, ms: 2000, failed: 1, input: 200, output: 100, cacheRead: 0, cacheWrite: 0 });
+  });
+
+  it("totals each UTC clock hour, counting calls only from calls, and keeps the newest HOURS_MAX hours", () => {
+    const noon = Date.parse("2026-10-18T12:00:00.000Z");
+    const hour = Math.floor(noon / HOUR_MS);
+    const r = buildReport(
+      [user(), at("2026-10-18T11:59:00.000Z")(assistant(1)), at("2026-10-18T12:00:00.000Z")(assistant(2)), at("2026-10-18T12:30:00.000Z")(toolResult(0.5))],
+      null,
+    );
+    expect(r.hours).toEqual([
+      { hour: hour - 1, calls: 1, tokens: 150, cost: 1 },
+      { hour, calls: 1, tokens: 300, cost: 2.5 },
+    ]);
+    const start = Date.UTC(2026, 8, 1);
+    const many = Array.from({ length: HOURS_MAX + 5 }, (_, i) => at(new Date(start + i * HOUR_MS).toISOString())(assistant(1)));
+    const hours = buildReport(many, null).hours;
+    expect(hours).toHaveLength(HOURS_MAX);
+    expect(hours[0]?.hour).toBe(Math.floor(start / HOUR_MS) + 5);
+    expect(hours.at(-1)?.hour).toBe(Math.floor(start / HOUR_MS) + HOURS_MAX + 4);
   });
 });
 
@@ -248,6 +353,16 @@ describe("slimEntry", () => {
     expect(slimEntry(branch)).toEqual({ type: "branch_summary", timestamp: branch.timestamp, usage: branch.usage });
     const spent = usageEntry(2, "q", "m2");
     expect(slimEntry({ ...spent, kind: "cache_warm" })).toEqual(spent);
+  });
+
+  it("keeps an assistant call's duration and stop reason, and no one else's", () => {
+    const failed = assistant(1, "m1", {}, "p", [], { durationMs: 6758, stopReason: "error", errorMessage: "boom" });
+    const slim = slimEntry(failed);
+    expect(slim).toMatchObject({ message: { durationMs: 6758, stopReason: "error" } });
+    expect(JSON.stringify(slim)).not.toContain("boom");
+    const result = toolResult(1);
+    expect(JSON.stringify(slimEntry({ ...result, message: { ...result.message, durationMs: 3 } }))).not.toContain("durationMs");
+    expect(buildReport([user(), slim as EntryLike], null).days[0]?.failed).toBe(1);
   });
 
   it("is null for the session header and for anything that is not an entry", () => {

@@ -116,6 +116,8 @@ export function backend(usage: () => UsageAnswer = () => answer(), over: Partial
           throw new Error("the Spend page is not part of these tests");
         }),
     ),
+    spendPanels: record("spendPanels", over.spendPanels ?? (() => ({ hidden: [] }))),
+    setSpendPanels: record("setSpendPanels", over.setSpendPanels ?? ((input) => input)),
   };
   return { rpc, calls, callsTo: (method: string) => calls.filter((c) => c.method === method) };
 }

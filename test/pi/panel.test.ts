@@ -4,7 +4,7 @@ import { PLAIN, type PanelTheme } from "../../extensions/pi/draw.js";
 import type { SessionSummary } from "../../extensions/pi/history.js";
 import { BurnPanel, type PanelOptions, type PanelView, VIEWS } from "../../extensions/pi/panel.js";
 import { dayKey } from "../../src/report.js";
-import { sampleReport } from "../helpers.js";
+import { dayRow, sampleReport } from "../helpers.js";
 
 const KEY = { tab: "\t", shiftTab: "\x1b[Z", left: "\x1b[D", right: "\x1b[C", up: "\x1b[A", down: "\x1b[B", enter: "\r", esc: "\x1b" };
 const NOW = Date.UTC(2026, 9, 18, 13, 12, 0);
@@ -27,8 +27,8 @@ const session = (path: string, title: string, cost: number, calls: number, hours
   updatedAt: NOW - hoursAgo * 3_600_000,
   calls,
   cost,
-  days: [{ day: dayKey(NOW - hoursAgo * 3_600_000), cost, calls, models: [] }],
-  utcDays: [{ day: dayKey(NOW - hoursAgo * 3_600_000, "UTC"), cost, calls, models: [] }],
+  days: [dayRow(dayKey(NOW - hoursAgo * 3_600_000), cost, {}, calls)],
+  utcDays: [dayRow(dayKey(NOW - hoursAgo * 3_600_000, "UTC"), cost, {}, calls)],
 });
 
 const history = (sessions: SessionSummary[]) => ({
@@ -116,7 +116,7 @@ describe("BurnPanel views", () => {
   it("shows tokens for a session that reports no cost", () => {
     const report = sampleReport({
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-      byModel: [{ key: "p/local", cost: 0, tokens: 1_736_000, calls: 23 }],
+      byModel: [{ key: "p/local", cost: 0, tokens: 1_736_000, calls: 23, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, timed: 0, ms: 0, failed: 0 }],
     });
     const out = text(panel({ report }).p.render(100));
     expect(out).toContain("1.7M tok used");
@@ -275,8 +275,8 @@ describe("BurnPanel history", () => {
   it("switches between local and UTC days with u", async () => {
     const yesterday: SessionSummary = {
       ...session("/s/utc", "late last night", 2, 3, 2),
-      days: [{ day: "2026-10-17", cost: 2, calls: 3, models: [] }],
-      utcDays: [{ day: dayKey(NOW, "UTC"), cost: 2, calls: 3, models: [] }],
+      days: [dayRow("2026-10-17", 2, {}, 3)],
+      utcDays: [dayRow(dayKey(NOW, "UTC"), 2, {}, 3)],
     };
     const { p } = panel({ view: "history", history: history([yesterday]), report: sampleReport({ days: [], utcDays: [] }) });
     await flush();

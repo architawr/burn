@@ -15,7 +15,8 @@ import { checkDailyBudget, createSpendHandlers, type SpendDeps } from "./spend/s
 
 export { rpcContract } from "./contract.js";
 
-const REPORT_MAX_BYTES = 128 * 1024;
+// The report is stored as one plugin KV value, which bb caps at 256 KiB.
+const REPORT_MAX_BYTES = 240 * 1024;
 const MAX_THREADS = 500;
 const TITLE_TTL_MS = 60_000;
 const CHILDREN_MAX = 50;
@@ -458,7 +459,7 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
   // The Burn pi extension reports each change here (extensions/pi/bb-report.ts) and applies the policy in the reply.
   bb.http.route("POST", "/usage", async (c) => {
     const text = await c.req.text();
-    if (text.length > REPORT_MAX_BYTES) return c.json({ ok: false, error: "usage report too large" } satisfies UsageReply, 413);
+    if (Buffer.byteLength(text, "utf8") > REPORT_MAX_BYTES) return c.json({ ok: false, error: "usage report too large" } satisfies UsageReply, 413);
     let body: unknown;
     try {
       body = JSON.parse(text);

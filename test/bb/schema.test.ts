@@ -3,8 +3,10 @@ import { usageEnvelopeSchema, usageReportSchema } from "../../extensions/bb/sche
 import {
   buildReport,
   CALL_COSTS_MAX,
+  CALL_TIME_BUCKETS,
   DAY_MODELS_MAX,
   DAYS_MAX,
+  HOURS_MAX,
   MODELS_MAX,
   PROMPT_MAX,
   SERIES_MAX,
@@ -35,7 +37,18 @@ describe("usageReportSchema", () => {
     const { turnCount, turns, days, running, budget, stoppedAt, ...rest } = sampleReport();
     const v1 = { ...rest, version: 1, series: rest.series.map(({ turn, ...p }) => p) };
     const parsed = usageReportSchema.parse(v1);
-    expect(parsed).toMatchObject({ version: 2, turnCount: 0, turns: [], days: [], utcDays: [], running: false, budget: null, stoppedAt: null, estimated: false });
+    expect(parsed).toMatchObject({
+      version: 2,
+      turnCount: 0,
+      turns: [],
+      days: [],
+      utcDays: [],
+      hours: [],
+      running: false,
+      budget: null,
+      stoppedAt: null,
+      estimated: false,
+    });
     expect(parsed.series.every((p) => p.turn === 0)).toBe(true);
   });
 
@@ -53,7 +66,37 @@ describe("usageReportSchema", () => {
     expect(usageReportSchema.parse(sampleReport({ estimated: true })).estimated).toBe(true);
   });
 
-  it("keeps a report at every array limit, UTC days included, under the 128 KiB a POST or host batch allows", () => {
+  it("reads day and model rows from Burn 0.2, which carry no detail, with zeros", () => {
+    const older = { day: "2026-10-18", cost: 1, calls: 2, models: [{ key: "p/m", cost: 1 }] };
+    const report = { ...sampleReport(), days: [older], utcDays: [older], byModel: [{ key: "p/m", cost: 1, tokens: 5, calls: 2 }] };
+    const parsed = usageReportSchema.parse(report);
+    expect(parsed.days[0]).toEqual({
+      ...older,
+      models: [{ key: "p/m", cost: 1, calls: 0, tokens: 0 }],
+      prompts: 0,
+      tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 },
+      costs: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      callTime: new Array(CALL_TIME_BUCKETS).fill(0),
+      failed: 0,
+      aborted: 0,
+    });
+    expect(parsed.byModel[0]).toEqual({ key: "p/m", cost: 1, tokens: 5, calls: 2, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, ms: 0, timed: 0, failed: 0 });
+    // Each parse gets its own zeros, so changing one report's cannot change another's.
+    expect(usageReportSchema.parse(report).days[0]?.tokens).not.toBe(parsed.days[0]?.tokens);
+    expect(parsed.days[0]?.callTime).not.toBe(parsed.utcDays[0]?.callTime);
+  });
+
+  it("reads a report from Burn 0.2, which has no hours, with none, and bounds the hours and call-time buckets", () => {
+    const { hours, ...older } = sampleReport();
+    expect(usageReportSchema.parse(older).hours).toEqual([]);
+    const hour = { hour: 497_878, calls: 1, tokens: 2, cost: 0.5 };
+    expect(usageReportSchema.parse(sampleReport({ hours: [hour] })).hours).toEqual([hour]);
+    expect(usageReportSchema.safeParse(sampleReport({ hours: new Array(HOURS_MAX + 1).fill(hour) })).success).toBe(false);
+    const day = { ...(sampleReport().days[0] as object), callTime: [1] };
+    expect(usageReportSchema.safeParse({ ...sampleReport(), days: [day] }).success).toBe(false);
+  });
+
+  it("keeps a report at every array limit, UTC days and hours included, under the 240 KiB a POST or host batch allows", () => {
     // Real provider/model keys run to about 40 characters; the schema allows longer ones.
     const key = (i: number) => `anthropic/claude-opus-4-5-2025110${i}-long`.padEnd(40, "x");
     const f = 0.12345678901234568;
@@ -61,10 +104,28 @@ describe("usageReportSchema", () => {
       day: `2026-${String(1 + (i % 12)).padStart(2, "0")}-${String(1 + (i % 28)).padStart(2, "0")}`,
       cost: f,
       calls: 123_456,
-      models: Array.from({ length: DAY_MODELS_MAX }, (_, j) => ({ key: key(j), cost: f })),
+      models: Array.from({ length: DAY_MODELS_MAX }, (_, j) => ({ key: key(j), cost: f, calls: 123_456, tokens: 123_456_789_012 })),
+      prompts: 12_345,
+      tokens: { input: 123_456_789, output: 123_456_789, cacheRead: 123_456_789_012, cacheWrite: 123_456_789, reasoning: 123_456_789 },
+      costs: { input: f, output: f, cacheRead: f, cacheWrite: f },
+      callTime: Array.from({ length: CALL_TIME_BUCKETS }, () => 123_456),
+      failed: 12_345,
+      aborted: 12_345,
     });
     const report = sampleReport({
-      byModel: Array.from({ length: MODELS_MAX }, (_, i) => ({ key: key(i), cost: f, tokens: 123_456_789, calls: 12_345 })),
+      byModel: Array.from({ length: MODELS_MAX }, (_, i) => ({
+        key: key(i),
+        cost: f,
+        tokens: 123_456_789_012,
+        calls: 12_345,
+        input: 123_456_789,
+        output: 123_456_789,
+        cacheRead: 123_456_789_012,
+        cacheWrite: 123_456_789,
+        timed: 12_345,
+        ms: 123_456_789_012,
+        failed: 12_345,
+      })),
       series: Array.from({ length: SERIES_MAX }, () => ({ at: 1_792_361_592_787, cost: f, tokens: 123_456, turn: 50 })),
       turns: Array.from({ length: TURNS_MAX }, (_, n) => ({
         n,
@@ -80,10 +141,11 @@ describe("usageReportSchema", () => {
       })),
       days: Array.from({ length: DAYS_MAX }, (_, i) => day(i)),
       utcDays: Array.from({ length: DAYS_MAX }, (_, i) => day(i)),
+      hours: Array.from({ length: HOURS_MAX }, (_, i) => ({ hour: 497_878 + i, calls: 12_345, tokens: 123_456_789_012, cost: f })),
     });
     expect(usageReportSchema.safeParse(report).success).toBe(true);
     const envelope = { threadId: "thr_aaaaaaaaaaaa", sentAt: 1_792_361_592_787, report };
-    expect(Buffer.byteLength(JSON.stringify(envelope))).toBeLessThan(128 * 1024);
+    expect(Buffer.byteLength(JSON.stringify(envelope))).toBeLessThan(240 * 1024);
   });
 
   it("drops unknown fields", () => {

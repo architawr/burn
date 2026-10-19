@@ -25,6 +25,12 @@ export function formatTokens(n: number): string {
   return `${Math.round(n / 1_000_000)}M`;
 }
 
+/** For totals across threads, which pass a billion; formatTokens keeps pi's footer rules. */
+export const formatTokenCount = (n: number): string => (n < 1e9 ? formatTokens(n) : `${(n / 1e9).toFixed(n < 1e10 ? 2 : 1)}B`);
+
+/** How long a model call took: "6.8s" under ten seconds, else "27s" or "1m 05s". */
+export const formatCallTime = (ms: number): string => (ms < 10_000 ? `${(ms / 1000).toFixed(1)}s` : formatDuration(ms));
+
 /** "18s", "1m 02s", "1h 12m", "2d 3h". */
 export function formatDuration(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000));
