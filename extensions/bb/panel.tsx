@@ -1,9 +1,20 @@
 import { type JsonValue, type PluginThreadPanelProps, useBbNavigate, useSettings } from "@get-bb/plugin-sdk/app";
 import { type ReactNode, useState } from "react";
-import { formatBudget, formatClock, formatDuration, formatTokens, formatUsd, isTokenOnly, modelName, turnMultiple, usageLabel } from "../../src/format.js";
+import {
+  formatAmount,
+  formatBudget,
+  formatClock,
+  formatDuration,
+  formatTokens,
+  formatUsd,
+  isTokenOnly,
+  modelName,
+  turnMultiple,
+  usageLabel,
+} from "../../src/format.js";
 import type { TurnRow, UsageReport } from "../../src/report.js";
 import { BudgetEditor } from "./budget-editor.js";
-import { BudgetStatus, CopyAction, Label, Models, StoppedNotice, WaitingNotice, WhereItWent } from "./card.js";
+import { BudgetStatus, CopyAction, EstimatedNote, Label, Models, StoppedNotice, WaitingNotice, WhereItWent } from "./card.js";
 import { MiniBars } from "./charts.js";
 import type { Family, UsageAnswer } from "./contract.js";
 import { cn } from "./lib/utils.js";
@@ -44,7 +55,7 @@ function Kpis({ answer, report }: { answer: UsageAnswer; report: UsageReport }):
       {kids > 0 ? (
         <Kpi
           label={`With ${kids} ${kids === 1 ? "child" : "children"}`}
-          value={formatUsd(family.total)}
+          value={formatAmount(family.total, family.estimated)}
           sub={`+${formatUsd(fromKids)} in children (${family.total > 0 ? Math.round((fromKids / family.total) * 100) : 0}%)`}
         />
       ) : (
@@ -52,7 +63,7 @@ function Kpis({ answer, report }: { answer: UsageAnswer; report: UsageReport }):
       )}
       <Kpi
         label="Per call"
-        value={report.calls > 0 && !tokenOnly ? formatUsd(own / report.calls) : "—"}
+        value={report.calls > 0 && !tokenOnly ? formatAmount(own / report.calls, report.estimated) : "—"}
         sub={`${report.calls} calls · ${formatDuration(report.updatedAt - report.startedAt)}`}
       />
       <Kpi label="Cache" value={report.cacheHitPct !== null ? `${report.cacheHitPct.toFixed(0)}%` : "—"} sub="hit rate" />
@@ -219,7 +230,7 @@ function FamilyList({ answer, report, onOpen }: { answer: UsageAnswer; report: U
             type="button"
             onClick={() => onOpen(child.threadId)}
             className={cn(row, "border-t border-border hover:bg-state-hover")}
-            aria-label={`Open ${child.title}, ${formatUsd(child.cost)}`}
+            aria-label={`Open ${child.title}, ${formatAmount(child.cost, child.estimated)}`}
           >
             <Dot running={child.running} />
             <span className="truncate">
@@ -231,14 +242,14 @@ function FamilyList({ answer, report, onOpen }: { answer: UsageAnswer; report: U
               </span>
             </span>
             <span className="text-[11.5px] text-muted-foreground tabular-nums">{child.calls} calls</span>
-            <span className="text-right font-semibold tabular-nums">{formatUsd(child.cost)}</span>
+            <span className="text-right font-semibold tabular-nums">{formatAmount(child.cost, child.estimated)}</span>
           </button>
         ))}
         <div className={cn(row, "border-t border-border bg-surface-recessed font-semibold")} data-testid="family-total">
           <span />
           <span>Total</span>
           <span className="text-[11.5px] font-normal text-muted-foreground tabular-nums">{family.calls} calls</span>
-          <span className="text-right tabular-nums">{formatUsd(family.total)}</span>
+          <span className="text-right tabular-nums">{formatAmount(family.total, family.estimated)}</span>
         </div>
       </div>
     </section>
@@ -258,6 +269,7 @@ export function BurnPanel({ threadId, params }: PluginThreadPanelProps): ReactNo
   return (
     <div className="flex flex-col gap-4 text-xs" data-testid="burn-panel">
       {report === null ? <WaitingNotice /> : <Kpis answer={answer} report={report} />}
+      {report?.estimated ? <EstimatedNote /> : null}
       {report?.stoppedAt != null ? <StoppedNotice stoppedAt={report.stoppedAt} budget={budget} /> : null}
       {report !== null ? <Turns report={report} /> : null}
       {report !== null ? <FamilyList answer={answer} report={report} onOpen={(id) => navigate.toThread(id)} /> : null}

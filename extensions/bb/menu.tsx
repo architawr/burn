@@ -10,7 +10,7 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { formatBudget, formatUsd } from "../../src/format.js";
+import { formatAmount, formatBudget } from "../../src/format.js";
 import { budgetWords } from "./budgets.js";
 import type { CostRow, rpcContract } from "./contract.js";
 import { FLAME_ICON } from "./icon.js";
@@ -105,7 +105,7 @@ export function useThreadCosts({ threadIds }: PluginThreadActionDataInput): Thre
 export function costDetail(row: CostRow | undefined): string | undefined {
   if (row === undefined) return undefined;
   if (row.label === null) return "No report yet";
-  return row.familyCost !== null ? `${row.label} · ${formatUsd(row.familyCost)} with children` : row.label;
+  return row.familyCost !== null ? `${row.label} · ${formatAmount(row.familyCost, row.estimated)} with children` : row.label;
 }
 
 export function costAction({ thread, data, navigate }: PluginThreadActionItemInput<ThreadCosts>): PluginThreadAction {

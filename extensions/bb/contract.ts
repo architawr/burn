@@ -17,6 +17,8 @@ const familySchema = z.object({
   /** This thread and every descendant that has reported. */
   total: amount,
   calls: count,
+  /** Some of the total is a list-price estimate. */
+  estimated: z.boolean(),
   children: z.array(
     z.object({
       threadId: z.string(),
@@ -26,14 +28,15 @@ const familySchema = z.object({
       running: z.boolean(),
       /** The child's costliest provider/model key. */
       model: z.string().nullable(),
+      estimated: z.boolean(),
     }),
   ),
 });
 
 const usageOutput = z.object({
   report: usageReportSchema.nullable(),
-  /** "pi": the thread's pi reported it; "log": read from its session log because it never reported. */
-  source: z.enum(["pi", "log"]).nullable(),
+  /** "pi": its Burn pi extension reported it; "log": its pi session log; "events": bb's usage events. */
+  source: z.enum(["pi", "log", "events"]).nullable(),
   reportedAt: z.number().nullable(),
   title: z.string().nullable(),
   budget: effectiveBudgetSchema.nullable(),
@@ -49,6 +52,8 @@ const costRow = z.object({
   familyCost: amount.nullable(),
   budget: effectiveBudgetSchema.nullable(),
   state: z.enum(["none", "ok", "near", "over"]),
+  /** The thread's or a descendant's cost is a list-price estimate. */
+  estimated: z.boolean(),
 });
 
 export const rpcContract = defineRpcContract({
@@ -67,7 +72,7 @@ export const rpcContract = defineRpcContract({
   },
   overBudget: {
     input: z.object({}),
-    output: z.object({ threads: z.array(z.object({ threadId: z.string(), cost: amount, budget: z.number().positive() })) }),
+    output: z.object({ threads: z.array(z.object({ threadId: z.string(), cost: amount, budget: z.number().positive(), estimated: z.boolean() })) }),
   },
   ...spendMethods,
 });

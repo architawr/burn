@@ -1,6 +1,17 @@
 import { type ComponentPropsWithoutRef, type ReactNode, useEffect, useState } from "react";
 import { budgetFraction, budgetState } from "../../src/budget.js";
-import { formatAgo, formatBudget, formatClock, formatDelta, formatDuration, formatUsd, isTokenOnly, modelName, usageLabel } from "../../src/format.js";
+import {
+  formatAgo,
+  formatAmount,
+  formatBudget,
+  formatClock,
+  formatDelta,
+  formatDuration,
+  formatUsd,
+  isTokenOnly,
+  modelName,
+  usageLabel,
+} from "../../src/format.js";
 import type { UsageReport } from "../../src/report.js";
 import { BudgetEditor } from "./budget-editor.js";
 import { budgetWords, type EffectiveBudget } from "./budgets.js";
@@ -22,11 +33,20 @@ export function Label({ children, aside }: { children: ReactNode; aside?: ReactN
 export function WaitingNotice(): ReactNode {
   return (
     <div className="flex flex-col gap-1 text-xs" data-testid="waiting">
-      <div className="font-semibold">Waiting for pi to report</div>
+      <div className="font-semibold">Waiting for the first model call</div>
       <p className="text-muted-foreground">
-        Burn shows a thread's cost once pi has written its session log, after the first prompt. Only pi threads have one.
+        Burn shows a thread's cost after its first model call: from pi's session log in pi threads, and from the usage bb records for other harnesses.
+        Claude Code reports as each turn ends.
       </p>
     </div>
+  );
+}
+
+export function EstimatedNote(): ReactNode {
+  return (
+    <p className="text-[11px] text-muted-foreground" data-testid="estimated">
+      ~ Estimated at list price: this harness records no cost.
+    </p>
   );
 }
 
@@ -128,7 +148,7 @@ export function familyLine(answer: UsageAnswer): string | null {
   const { family, report } = answer;
   const count = family.children.length;
   if (count === 0 || report === null || family.total <= report.cost.total) return null;
-  return `${formatUsd(family.total)} with ${count} child ${count === 1 ? "thread" : "threads"}`;
+  return `${formatAmount(family.total, family.estimated)} with ${count} child ${count === 1 ? "thread" : "threads"}`;
 }
 
 const updatedText = (answer: UsageAnswer | null, now: number): string =>
@@ -233,6 +253,7 @@ export function BurnCard({ answer, threadId, defaultBudget, now, onOpenDetails, 
               ) : null}
             </div>
             <div className="mt-1 text-muted-foreground tabular-nums">{meta(report)}</div>
+            {report.estimated ? <EstimatedNote /> : null}
             {withChildren !== null ? (
               <div className="text-muted-foreground tabular-nums" data-testid="with-children">
                 {withChildren}

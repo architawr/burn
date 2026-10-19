@@ -47,6 +47,7 @@ describe("the Cost thread action", () => {
     expect(costDetail(costRow({ threadId: THREAD }))).toBe("$4.82");
     expect(costDetail(costRow({ threadId: THREAD, familyCost: 6.64 }))).toBe("$4.82 · $6.64 with children");
     expect(costDetail(costRow({ threadId: THREAD, cost: null, label: null }))).toBe("No report yet");
+    expect(costDetail(costRow({ threadId: THREAD, label: "~$4.82", familyCost: 6.64, estimated: true }))).toBe("~$4.82 · ~$6.64 with children");
   });
 
   it("offers the panel, the budget and the summary, with the budget share as a hint", () => {

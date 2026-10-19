@@ -7,7 +7,7 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { budgetState } from "../../../src/budget.js";
-import { formatBudget, formatUsd, modelName, providerName } from "../../../src/format.js";
+import { formatAmount, formatBudget, formatUsd, modelName, providerName } from "../../../src/format.js";
 import { cn } from "../lib/utils.js";
 import type { SpendOutput, SpendRange, SpendZone, spendMethods } from "./contract.js";
 import { dayDate, RANGE_DAYS } from "./days.js";
@@ -60,7 +60,7 @@ const chartColor = (i: number): CSSProperties => ({ color: CHART[i % CHART.lengt
 const PROJECT_COLOR = chartColor(4);
 const RUNNING_COLOR: CSSProperties = { color: "var(--chart-1, var(--timeline-accent))" };
 
-const EMPTY_TEXT = "No pi threads have reported yet. Threads report after they start with Burn installed.";
+const EMPTY_TEXT = "No thread has spent anything yet. Burn counts a thread from its first model call.";
 
 const errorText = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause));
 
@@ -225,7 +225,11 @@ function Change({ total, previous, range }: { total: number; previous: number; r
 function Kpis({ data }: { data: SpendOutput }) {
   return (
     <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
-      <Kpi label={`Spent${zoneSuffix(data.tz)}`} value={formatUsd(data.total)} sub={<Change total={data.total} previous={data.previousTotal} range={data.range} />} />
+      <Kpi
+        label={`Spent${zoneSuffix(data.tz)}`}
+        value={formatAmount(data.total, data.estimated)}
+        sub={<Change total={data.total} previous={data.previousTotal} range={data.range} />}
+      />
       <Kpi
         label="Threads"
         value={String(data.threadCount)}
@@ -456,8 +460,8 @@ function ThreadTable({ data }: { data: SpendOutput }) {
                   {detail.length > 0 ? <div className="truncate text-[11px] text-muted-foreground">{detail.join(" · ")}</div> : null}
                 </td>
                 <td className="px-2 py-2 text-right tabular-nums">{t.calls}</td>
-                <td className="px-2 py-2 text-right tabular-nums">{formatUsd(t.rangeCost)}</td>
-                <td className="px-2 py-2 text-right tabular-nums">{formatUsd(t.total)}</td>
+                <td className="px-2 py-2 text-right tabular-nums">{formatAmount(t.rangeCost, t.estimated)}</td>
+                <td className="px-2 py-2 text-right tabular-nums">{formatAmount(t.total, t.estimated)}</td>
                 <td className="px-3 py-2 text-right whitespace-nowrap">
                   <span className="inline-flex gap-1">
                     {over && t.budget !== null ? (
@@ -507,7 +511,10 @@ function Bars({ label, rows }: { label: string; rows: { key: string; name: strin
 function Dashboard({ data }: { data: SpendOutput }) {
   return (
     <>
-      <Kpis data={data} />
+      <div className="space-y-2">
+        <Kpis data={data} />
+        {data.estimated ? <p className="text-xs text-muted-foreground">~ includes list-price estimates for harnesses that record no cost.</p> : null}
+      </div>
       <section aria-label={data.range === "today" ? "Today" : "Per day"}>
         <Label aside={data.models.length > 0 ? <Legend models={data.models} /> : null}>
           {data.range === "today" ? "Today" : "Per day"}
@@ -544,7 +551,7 @@ function Notice({ role, children }: { role: "status" | "alert"; children: ReactN
   );
 }
 
-/** The Burn page: what every pi thread has spent, by day, thread, project and model. */
+/** The Burn page: what every thread has spent, by day, thread, project and model. */
 export function SpendPage({ subPath }: PluginNavPanelProps): ReactNode {
   const [range, setRange] = useState<SpendRange>(() =>
     Object.hasOwn(RANGE_DAYS, subPath) ? (subPath as SpendRange) : "7d",

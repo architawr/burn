@@ -1,6 +1,8 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import type { UsageReport } from "../../src/report.js";
+import { createEventReader } from "./events.js";
+import { type Harness, harnessOf } from "./harnesses.js";
 import { HOST_BATCH, hostContract, hostSignals } from "./host/contract.js";
 import { sessionStem } from "./host/pi-sessions.js";
 import { logKey } from "./keys.js";
@@ -14,24 +16,32 @@ const HOST_TIMEOUT_MS = 25_000;
 const SESSIONS_MAX = 32;
 const CACHE_MAX = 1000;
 
-/** A report read from a thread's pi session logs; `at` is when the newest log last changed. */
+/**
+ * A report Burn read itself: "log" from a pi thread's session logs, "events"
+ * from the usage bb records for other harnesses. `at` is when it last changed.
+ */
 export interface LogReport {
   report: UsageReport;
   at: number;
+  source: "log" | "events";
 }
 
 export interface ReportSource {
-  /** The latest log report of each thread that has one: from its host, else the last one kept. */
+  /** The latest report of each thread that has one: from its host or bb's events, else the last one kept. */
   reportsOf(threadIds: readonly string[]): Promise<Map<string, LogReport>>;
   /** Whether bb says the thread is working right now. */
   running(threadId: string): Promise<boolean>;
-  forget(threadId: string): void;
+  /** How Burn reads the thread, or null when bb could not say. */
+  harnessOf(threadId: string): Promise<Harness | null>;
+  forget(threadId: string): Promise<void>;
 }
 
-/** What bb says about a thread: the machine that keeps its logs (null for none, or not pi) and its pi sessions. */
+/** What bb says about a thread: its provider, the machine that keeps its pi logs (null for none, or not pi) and its pi sessions. */
 interface Facts {
   at: number;
   hostId: string | null;
+  /** null when the lookup failed. */
+  providerId: string | null;
   sessionIds: string[];
   /** The file names the host reports changes by. */
   stems: Set<string>;
@@ -51,14 +61,16 @@ function remember<V>(map: Map<string, V>, key: string, value: V): void {
 }
 
 /**
- * Every pi thread's report, read by the Burn host entry from the thread's
- * session logs on the machine that runs it. Reports are kept until the host
- * signals that one of the thread's logs changed, or a minute passes; then
- * `onChange` names the threads to look at again.
+ * Every thread's report. A pi thread's is read by the Burn host entry from its
+ * session logs on the machine that runs it, and kept until the host signals
+ * that one of the thread's logs changed, or a minute passes. Any other thread's
+ * comes from the usage bb records (events.ts). `onChange` names the threads to
+ * look at again.
  */
 export function createReportSource(bb: BbPluginApi, opts: { onChange(threadIds: string[]): void; now?: () => number }): ReportSource {
   const now = opts.now ?? Date.now;
   const host = bb.hosts.experimental_client({ contract: hostContract, experimental_signals: hostSignals });
+  const events = createEventReader(bb, { onChange: opts.onChange, now });
   const facts = new Map<string, Facts>();
   const statuses = new Map<string, string>();
   // Thread events seen per thread, so a lookup that an event overtook does not undo it.
@@ -73,7 +85,9 @@ export function createReportSource(bb: BbPluginApi, opts: { onChange(threadIds: 
     const before = heard.get(threadId) ?? 0;
     const thread = await bb.sdk.threads.get({ threadId });
     if ((heard.get(threadId) ?? 0) === before) remember(statuses, threadId, thread.status);
-    if (thread.providerId !== "pi" || thread.environmentId === null) return { at: now(), hostId: null, sessionIds: [], stems: new Set() };
+    if (harnessOf(thread.providerId).reader !== "pi-log" || thread.environmentId === null) {
+      return { at: now(), hostId: null, providerId: thread.providerId, sessionIds: [], stems: new Set() };
+    }
     const { hostId } = await bb.sdk.environments.get({ environmentId: thread.environmentId });
     const rows = await bb.sdk.threads.events.list({ threadId, types: ["thread/identity"] });
     const identities = rows.flatMap((row) => {
@@ -82,7 +96,7 @@ export function createReportSource(bb: BbPluginApi, opts: { onChange(threadIds: 
     });
     // The thread id too, for a session named after the thread rather than an identity.
     const sessionIds = [...new Set([...identities, threadId])].slice(-SESSIONS_MAX);
-    return { at: now(), hostId, sessionIds, stems: new Set(sessionIds.map(sessionStem)) };
+    return { at: now(), hostId, providerId: thread.providerId, sessionIds, stems: new Set(sessionIds.map(sessionStem)) };
   }
 
   async function factsOf(threadId: string): Promise<Facts> {
@@ -93,7 +107,7 @@ export function createReportSource(bb: BbPluginApi, opts: { onChange(threadIds: 
       found = await lookUp(threadId);
     } catch (err) {
       bb.log.warn(`looking up thread ${threadId} failed, so Burn reads no session log for it: ${message(err)}`);
-      found = { at: now(), hostId: null, sessionIds: [], stems: new Set() };
+      found = { at: now(), hostId: null, providerId: null, sessionIds: [], stems: new Set() };
     }
     remember(facts, threadId, found);
     return found;
@@ -113,7 +127,7 @@ export function createReportSource(bb: BbPluginApi, opts: { onChange(threadIds: 
   async function save(threadId: string, got: LogReport): Promise<void> {
     if (saved.get(threadId) === got.at) return;
     try {
-      await bb.storage.kv.set(logKey(threadId), got);
+      await bb.storage.kv.set(logKey(threadId), { report: got.report, at: got.at });
       remember(saved, threadId, got.at);
     } catch (err) {
       bb.log.warn(`saving the log report of ${threadId} failed: ${message(err)}`);
@@ -124,7 +138,7 @@ export function createReportSource(bb: BbPluginApi, opts: { onChange(threadIds: 
     const raw = await bb.storage.kv.get<unknown>(logKey(threadId));
     if (raw === undefined) return null;
     const parsed = logSchema.safeParse(raw);
-    if (parsed.success) return parsed.data;
+    if (parsed.success) return { ...parsed.data, source: "log" };
     await bb.storage.kv.delete(logKey(threadId));
     return null;
   }
@@ -149,7 +163,7 @@ export function createReportSource(bb: BbPluginApi, opts: { onChange(threadIds: 
       }
       failedAt.delete(hostId);
       for (const { threadId, report, at } of answer.reports) {
-        const got = report !== null && at !== null ? { report, at } : null;
+        const got: LogReport | null = report !== null && at !== null ? { report, at, source: "log" } : null;
         answers.set(threadId, got);
         if ((versions.get(threadId) ?? 0) === seen.get(threadId)) remember(reports, threadId, { got, checkedAt });
         if (got) await save(threadId, got);
@@ -176,37 +190,48 @@ export function createReportSource(bb: BbPluginApi, opts: { onChange(threadIds: 
     remember(statuses, thread.id, thread.status);
   }
 
-  bb.events.on("thread.active", ({ thread }) => {
-    if (thread.providerId !== "pi") return;
-    // A thread that just started may have a pi session bb had not named yet.
-    facts.delete(thread.id);
+  /** bb stores a turn's usage just before the thread goes idle, so a status change reads the thread's events again. */
+  function heardStatus(thread: { id: string; status: string; providerId: string }): void {
     hear(thread);
+    if (harnessOf(thread.providerId).reader === "events") events.invalidate(thread.id);
     opts.onChange([thread.id]);
-  });
-  for (const name of ["thread.idle", "thread.failed"] as const) {
-    bb.events.on(name, ({ thread }) => {
-      if (thread.providerId !== "pi") return;
-      hear(thread);
-      opts.onChange([thread.id]);
-    });
   }
+
+  bb.events.on("thread.active", ({ thread }) => {
+    // A pi thread that just started may have a pi session bb had not named yet.
+    if (harnessOf(thread.providerId).reader === "pi-log") facts.delete(thread.id);
+    heardStatus(thread);
+  });
+  for (const name of ["thread.idle", "thread.failed"] as const) bb.events.on(name, ({ thread }) => heardStatus(thread));
 
   return {
     async reportsOf(threadIds) {
       const ids = [...new Set(threadIds)];
       const answers = new Map<string, LogReport | null>();
+      const fromEvents = new Map<string, LogReport | null>();
+      const eventReads: Promise<void>[] = [];
       const wanted = new Map<string, string[]>();
       await Promise.all(
         ids.map(async (threadId) => {
           if (fresh(threadId)) return;
-          const { hostId } = await factsOf(threadId);
+          const { hostId, providerId } = await factsOf(threadId);
+          if (providerId !== null && harnessOf(providerId).reader === "events") {
+            const read = events.reportOf(threadId, providerId).then((got) => void fromEvents.set(threadId, got && { ...got, source: "events" }));
+            eventReads.push(read);
+            return;
+          }
           if (hostId === null || hostDown(hostId)) return;
           wanted.set(hostId, [...(wanted.get(hostId) ?? []), threadId]);
         }),
       );
-      await Promise.all([...wanted].map(([hostId, batch]) => ask(hostId, batch, answers)));
+      await Promise.all([...[...wanted].map(([hostId, batch]) => ask(hostId, batch, answers)), ...eventReads]);
       const out = new Map<string, LogReport>();
       for (const threadId of ids) {
+        if (fromEvents.has(threadId)) {
+          const got = fromEvents.get(threadId);
+          if (got) out.set(threadId, got);
+          continue;
+        }
         const got = answers.has(threadId) ? answers.get(threadId) : fresh(threadId) ? reports.get(threadId)?.got : null;
         const best = got ?? (await lastKept(threadId));
         if (best) out.set(threadId, best);
@@ -217,8 +242,13 @@ export function createReportSource(bb: BbPluginApi, opts: { onChange(threadIds: 
       await factsOf(threadId);
       return statuses.get(threadId) === "active";
     },
-    forget(threadId) {
+    harnessOf: async (threadId) => {
+      const { providerId } = await factsOf(threadId);
+      return providerId === null ? null : harnessOf(providerId);
+    },
+    async forget(threadId) {
       for (const map of [facts, statuses, heard, reports, versions, saved]) map.delete(threadId);
+      await events.forget(threadId);
     },
   };
 }

@@ -1,11 +1,13 @@
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BurnAlert } from "../../extensions/bb/alerts.js";
+import type { EventRow } from "../../extensions/bb/ledger.js";
 import plugin, { SETTINGS } from "../../extensions/bb/server.js";
 import * as spendServer from "../../extensions/bb/spend/server.js";
 import type { EntryLike, UsageReport } from "../../src/report.js";
 import { buildReport, dayKey } from "../../src/report.js";
 import { assistant, sampleReport, toolResult, user } from "../helpers.js";
+import { CODEX_1, CODEX_1_2, CODEX_2, listEvents, requestEvent, totals, usageEvent } from "./fixtures.js";
 
 const THREAD = "thr_aaaaaaaa";
 const CHILD = "thr_cccccccc";
@@ -26,6 +28,10 @@ type Options = {
   statuses?: Record<string, "active" | "idle">;
   /** What `threads.list` returns. */
   listed?: { id: string; providerId: string; updatedAt: number; deletedAt: number | null }[];
+  /** bb's provider per thread; pi when not given. */
+  providers?: Record<string, string>;
+  /** The usage events bb recorded, for threads of other providers. */
+  events?: EventRow[];
 };
 
 const LOG_MTIME = 1_700_000_000_000;
@@ -34,6 +40,7 @@ const HOST = "host_1";
 async function setup(opts: Options = {}) {
   const logs = opts.logs ?? {};
   const statuses = opts.statuses ?? {};
+  const rows = opts.events ?? [];
   const { bb, harness } = createFakePluginHost({
     pluginId: "pi-burn",
     settings: opts.settings,
@@ -41,13 +48,16 @@ async function setup(opts: Options = {}) {
       threads: {
         list: async () => opts.listed ?? [],
         events: {
-          list: async ({ threadId }: { threadId: string }) => [{ type: "thread/identity", threadId, seq: 1, data: { providerThreadId: `pi_${threadId}` } }],
+          list: async (args: Parameters<ReturnType<typeof listEvents>>[0]) =>
+            args.types?.includes("thread/identity")
+              ? [{ type: "thread/identity", threadId: args.threadId, seq: 1, data: { providerThreadId: `pi_${args.threadId}` } }]
+              : listEvents(() => rows)(args),
         },
         get: async ({ threadId }: { threadId: string }) =>
           makeThreadResponse({
             id: threadId,
             title: opts.titles?.[threadId] ?? null,
-            providerId: "pi",
+            providerId: opts.providers?.[threadId] ?? "pi",
             environmentId: "env_1",
             status: statuses[threadId] ?? "idle",
           }),
@@ -89,7 +99,13 @@ async function setup(opts: Options = {}) {
     return harness.behavior.experimental_emitHostSignal(HOST, "changed", { sessionIds: [`pi_${threadId}`], all: false });
   };
   const stops = () => harness.inspection.sdk.callsTo("threads.stop");
-  return { bb, harness, post, rpc, usage, signals, alerts, logs, statuses, spend, stops };
+  /** Records usage events for a thread of another provider and has bb say so, as it does within a second. */
+  const record = (threadId: string, ...events: EventRow[]) => {
+    rows.push(...events);
+    const providerId = opts.providers?.[threadId] ?? "pi";
+    return harness.behavior.emitThreadEvent("experimental_thread.events", { thread: makeThreadResponse({ id: threadId, providerId }), sequence: rows.length });
+  };
+  return { bb, harness, post, rpc, usage, signals, alerts, logs, statuses, spend, stops, record };
 }
 
 const envelope = (sentAt: number, over: Partial<UsageReport> = {}, threadId = THREAD) => ({ threadId, sentAt, report: sampleReport(over) });
@@ -125,9 +141,10 @@ describe("settings", () => {
     const stop = s.harness.inspection.registrations.settingsDescriptors.stopAtBudget;
     expect(stop).toMatchObject({ type: "boolean", label: "Stop a thread at its budget", default: false });
     expect(stop?.description).toMatch(/^Off by default/);
-    expect(stop?.description).toContain("only the pi run whose cost crosses");
+    expect(stop?.description).toContain("Burn stops the run whose cost crosses the thread's budget");
     expect(stop?.description).toContain("Send another prompt to continue");
-    expect(stop?.description).toContain("without it, Burn stops the thread's current work through bb");
+    expect(stop?.description).toContain("otherwise Burn stops the thread's current work through bb");
+    expect(stop?.description).toContain("Claude Code threads are not stopped");
     expect(SETTINGS.notifyExpensiveTurn.description).toContain("at least 3 times the thread's median turn and at least $0.50");
   });
 
@@ -362,9 +379,10 @@ describe("costs, overBudget and family", () => {
     expect(title).toBeNull();
     expect(family.total).toBeCloseTo(6.64);
     expect(family.calls).toBe(46);
+    expect(family.estimated).toBe(false);
     expect(family.children).toEqual([
-      { threadId: CHILD, title: "Write chip tests", cost: 1.1, calls: 14, running: true, model: "p/claude-opus" },
-      { threadId: GRANDCHILD, title: "Untitled thread", cost: 0.72, calls: 9, running: false, model: "p/claude-opus" },
+      { threadId: CHILD, title: "Write chip tests", cost: 1.1, calls: 14, running: true, model: "p/claude-opus", estimated: false },
+      { threadId: GRANDCHILD, title: "Untitled thread", cost: 0.72, calls: 9, running: false, model: "p/claude-opus", estimated: false },
     ]);
   });
 
@@ -375,9 +393,9 @@ describe("costs, overBudget and family", () => {
     await s.rpc("setBudget", { threadId: CHILD, budget: 2 });
     const { threads } = await s.rpc<{ threads: Record<string, unknown>[] }>("costs", { threadIds: [THREAD, CHILD, "thr_ffffffff"] });
     expect(threads).toEqual([
-      { threadId: THREAD, cost: 4.82, label: "$4.82", familyCost: expect.closeTo(6.64), budget: { amount: 10, source: "setting" }, state: "ok" },
-      { threadId: CHILD, cost: 1.82, label: "$1.82", familyCost: null, budget: { amount: 2, source: "thread" }, state: "near" },
-      { threadId: "thr_ffffffff", cost: null, label: null, familyCost: null, budget: { amount: 10, source: "setting" }, state: "ok" },
+      { threadId: THREAD, cost: 4.82, label: "$4.82", familyCost: expect.closeTo(6.64), budget: { amount: 10, source: "setting" }, state: "ok", estimated: false },
+      { threadId: CHILD, cost: 1.82, label: "$1.82", familyCost: null, budget: { amount: 2, source: "thread" }, state: "near", estimated: false },
+      { threadId: "thr_ffffffff", cost: null, label: null, familyCost: null, budget: { amount: 10, source: "setting" }, state: "ok", estimated: false },
     ]);
     await expect(s.rpc("costs", { threadIds: [] })).rejects.toThrow();
   });
@@ -388,7 +406,7 @@ describe("costs, overBudget and family", () => {
       logs: { [CHILD]: [user(), assistant(12)] },
       listed: [{ id: CHILD, providerId: "pi", updatedAt: Date.now(), deletedAt: null }],
     });
-    expect(await s.rpc("overBudget", {})).toEqual({ threads: [{ threadId: CHILD, cost: 12, budget: 10 }] });
+    expect(await s.rpc("overBudget", {})).toEqual({ threads: [{ threadId: CHILD, cost: 12, budget: 10, estimated: false }] });
   });
 
   it("lists every stored thread over its budget", async () => {
@@ -397,7 +415,31 @@ describe("costs, overBudget and family", () => {
     await s.post(envelope(1, costOf(3), CHILD));
     await s.post(envelope(1, costOf(30), GRANDCHILD));
     await s.rpc("setBudget", { threadId: GRANDCHILD, budget: null });
-    expect(await s.rpc("overBudget", {})).toEqual({ threads: [{ threadId: THREAD, cost: 12.4, budget: 10 }] });
+    expect(await s.rpc("overBudget", {})).toEqual({ threads: [{ threadId: THREAD, cost: 12.4, budget: 10, estimated: false }] });
+  });
+
+  it("marks a family, a cost row and an over-budget row that include a list-price estimate", async () => {
+    const s = await setup({
+      settings: { threadBudget: 0.01 },
+      providers: { [CHILD]: "codex" },
+      descendants: { [THREAD]: [CHILD] },
+      events: [requestEvent(CHILD, "go", "gpt-5.5"), usageEvent(CHILD, CODEX_1)],
+      listed: [{ id: CHILD, providerId: "codex", updatedAt: Date.now(), deletedAt: null }],
+    });
+    await s.post(envelope(1, costOf(4.82)));
+    const { family } = await s.usage();
+    expect(family.estimated).toBe(true);
+    expect(family.children).toEqual([expect.objectContaining({ threadId: CHILD, estimated: true })]);
+    const { threads } = await s.rpc<{ threads: Record<string, unknown>[] }>("costs", { threadIds: [THREAD, CHILD] });
+    expect(threads.map((t) => [t.label, t.estimated])).toEqual([
+      ["$4.82", true],
+      ["~$0.05", true],
+    ]);
+    const over = await s.rpc<{ threads: { threadId: string; estimated: boolean }[] }>("overBudget", {});
+    expect(over.threads.map((t) => [t.threadId, t.estimated]).sort()).toEqual([
+      [THREAD, false],
+      [CHILD, true],
+    ]);
   });
 
   it("reads the session log of a thread or child that never reported", async () => {
@@ -417,7 +459,7 @@ describe("costs, overBudget and family", () => {
     expect((await s.usage(CHILD)).source).toBe("pi");
   });
 
-  it("counts pi threads that never reported on the Burn page, and skips other providers and deleted threads", async () => {
+  it("counts threads of every provider that never reported on the Burn page, and skips deleted ones", async () => {
     const today = (entry: { timestamp: string }) => ({ ...entry, timestamp: new Date().toISOString() });
     const s = await setup({
       logs: { [CHILD]: [today(user("hi")), today(assistant(3))], [GRANDCHILD]: [today(user()), today(assistant(5))] },
@@ -432,6 +474,28 @@ describe("costs, overBudget and family", () => {
     const spend = await s.rpc<{ total: number; threadCount: number }>("spend", { range: "today", projectId: null });
     expect(spend.threadCount).toBe(2);
     expect(spend.total).toBeCloseTo(5);
+  });
+
+  it("counts a Codex thread beside a pi one on the Burn page and against the daily budget", async () => {
+    const today = (entry: { timestamp: string }) => ({ ...entry, timestamp: new Date().toISOString() });
+    const CODEX = "thr_eeeeeeee";
+    const s = await setup({
+      settings: { dailyBudget: 3.01 },
+      providers: { [CODEX]: "codex" },
+      logs: { [CHILD]: [today(user("hi")), today(assistant(3))] },
+      listed: [
+        { id: CHILD, providerId: "pi", updatedAt: Date.now(), deletedAt: null },
+        { id: CODEX, providerId: "codex", updatedAt: Date.now(), deletedAt: null },
+      ],
+    });
+    s.harness.sdk.stub("projects.list", async () => []);
+    await s.record(CODEX, requestEvent(CODEX, "go", "gpt-5.5"), usageEvent(CODEX, CODEX_1));
+    await vi.waitFor(() => expect(s.alerts().map((a) => a.kind)).toEqual(["daily"]));
+    expect(s.alerts()[0]?.body).toContain("across 2 threads today");
+    const spend = await s.rpc<{ total: number; threadCount: number }>("spend", { range: "today", projectId: null });
+    expect(spend.threadCount).toBe(2);
+    expect(spend.total).toBeCloseTo(3.053, 9);
+    expect(await s.usage(CODEX)).toMatchObject({ source: "events", report: { estimated: true, calls: 1 } });
   });
 
   it("takes the figures from the log over a report from Burn 0.1, which has no prompts or days", async () => {
@@ -525,6 +589,42 @@ describe("stop at budget, for threads without the pi extension", () => {
     await s.post(envelope(1, costOf(9)));
     await settle();
     await run(s, 2);
+    expect(s.stops()).toEqual([]);
+  });
+
+  it("stops a Codex thread once when a response crosses its budget, even its first one", async () => {
+    const s = await setup({ settings: { threadBudget: 0.05, stopAtBudget: true }, providers: { [THREAD]: "codex" }, statuses: { [THREAD]: "active" } });
+    await s.record(THREAD, requestEvent(THREAD, "go", "gpt-5.5"), usageEvent(THREAD, CODEX_1));
+    await vi.waitFor(() => expect(s.stops()).toHaveLength(1));
+    await s.record(THREAD, usageEvent(THREAD, CODEX_1_2, CODEX_2));
+    await settle();
+    expect(s.stops()).toEqual([[{ threadId: THREAD }]]);
+    expect(s.alerts().map((a) => a.kind).sort()).toEqual(["over", "stopped"]);
+  });
+
+  it("alerts a Claude Code thread at its budget but never stops it, since its cost arrives as each turn ends", async () => {
+    const s = await setup({ settings: { threadBudget: 0.05, stopAtBudget: true }, providers: { [THREAD]: "claude-code" }, statuses: { [THREAD]: "active" } });
+    const turn = totals({ inputTokens: 100, cacheReadInputTokens: 40_000, cacheWriteInputTokens: 10_000, cachedInputTokens: 50_000, outputTokens: 1000, totalTokens: 51_100 });
+    await s.record(THREAD, requestEvent(THREAD, "go", "claude-opus-5-5"), usageEvent(THREAD, turn));
+    await vi.waitFor(() => expect(s.alerts().map((a) => a.kind)).toEqual(["over"]));
+    await settle();
+    expect(s.stops()).toEqual([]);
+  });
+
+  it("never stops a Codex thread with the default settings, and only sets a baseline for one from before Burn loaded", async () => {
+    const earlier = Date.now() - 60_000;
+    const old = "thr_ffffffff";
+    const s = await setup({
+      settings: { threadBudget: 0.05 },
+      providers: { [THREAD]: "codex", [old]: "codex" },
+      statuses: { [THREAD]: "active", [old]: "active" },
+      events: [requestEvent(old, "go", "gpt-5.5"), usageEvent(old, CODEX_1), usageEvent(old, CODEX_1_2, CODEX_2)].map((e) => ({ ...e, createdAt: earlier })),
+    });
+    await s.record(THREAD, requestEvent(THREAD, "go", "gpt-5.5"), usageEvent(THREAD, CODEX_1));
+    await s.record(old);
+    await vi.waitFor(() => expect(s.alerts()).toHaveLength(1));
+    await settle();
+    expect(s.alerts()[0]).toMatchObject({ kind: "over", threadId: THREAD });
     expect(s.stops()).toEqual([]);
   });
 

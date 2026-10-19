@@ -47,6 +47,7 @@ function output(range: SpendRange = "7d", over: Partial<SpendOutput> = {}): Spen
         total: 22.75,
         budget: null,
         running: false,
+        estimated: false,
       },
       {
         threadId: "thr_aaaaaa02",
@@ -59,6 +60,7 @@ function output(range: SpendRange = "7d", over: Partial<SpendOutput> = {}): Spen
         total: 12.4,
         budget: 10,
         running: false,
+        estimated: false,
       },
       {
         threadId: "thr_aaaaaa03",
@@ -71,6 +73,7 @@ function output(range: SpendRange = "7d", over: Partial<SpendOutput> = {}): Spen
         total: 6.64,
         budget: 10,
         running: true,
+        estimated: false,
       },
     ],
     projects: [
@@ -87,6 +90,7 @@ function output(range: SpendRange = "7d", over: Partial<SpendOutput> = {}): Spen
     ],
     dailyBudget: 50,
     reportedThreads: 40,
+    estimated: false,
     ...over,
   };
 }
@@ -152,6 +156,18 @@ describe("Spend page", () => {
 
     expect(within(slot.getByRole("region", { name: "By project" })).getByText("bb-marketplace")).toBeTruthy();
     expect(within(slot.getByRole("region", { name: "By model" })).getByText("$57.80")).toBeTruthy();
+    expect(slot.queryByText(/list-price estimates/)).toBeNull();
+  });
+
+  it("marks list-price estimates in the Spent figure and the thread rows, and says so", async () => {
+    const base = output("7d");
+    const slot = render(backend(() => ({ ...base, estimated: true, threads: base.threads.map((t, i) => ({ ...t, estimated: i === 0 })) })));
+    expect(await slot.findByText("~$97.40")).toBeTruthy();
+    expect(slot.getByText("~ includes list-price estimates for harnesses that record no cost.")).toBeTruthy();
+    const rows = slot.getAllByTestId("spend-thread");
+    expect(rows[0]?.textContent).toContain("~$14.20");
+    expect(rows[0]?.textContent).toContain("~$22.75");
+    expect(rows[1]?.textContent).not.toContain("~");
   });
 
   it("opens a thread from its row", async () => {
@@ -208,7 +224,7 @@ describe("Spend page", () => {
   it("shows the empty state when no thread has reported", async () => {
     const slot = render(backend(() => output("7d", { reportedThreads: 0, threads: [], projects: [], models: [], projectOptions: [] })));
     expect(
-      await slot.findByText("No pi threads have reported yet. Threads report after they start with Burn installed."),
+      await slot.findByText("No thread has spent anything yet. Burn counts a thread from its first model call."),
     ).toBeTruthy();
     expect(slot.queryByText("Spent")).toBeNull();
   });

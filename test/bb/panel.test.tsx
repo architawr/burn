@@ -17,9 +17,10 @@ afterEach(() => {
 const FAMILY = {
   total: 6.64,
   calls: 46,
+  estimated: false,
   children: [
-    { threadId: CHILD, title: "Investigate footer selector", cost: 1.1, calls: 14, running: true, model: "p/claude-sonnet" },
-    { threadId: "thr_dddddddd", title: "Write chip tests", cost: 0.72, calls: 9, running: false, model: null },
+    { threadId: CHILD, title: "Investigate footer selector", cost: 1.1, calls: 14, running: true, model: "p/claude-sonnet", estimated: false },
+    { threadId: "thr_dddddddd", title: "Write chip tests", cost: 0.72, calls: 9, running: false, model: null, estimated: false },
   ],
 };
 
@@ -42,7 +43,20 @@ describe("the Burn panel", () => {
     for (const part of ["This thread$4.82", "48% of $10 budget", "With 2 children$6.64", "+$1.82 in children (27%)", "Per call$0.21", "23 calls · 1h 12m", "Cache89%"]) {
       expect(kpis).toContain(part);
     }
-    expect(slot.container.textContent).not.toMatch(/saved|\/h\b|per hour|Jump to message/);
+    expect(slot.container.textContent).not.toMatch(/saved|\/h\b|per hour|Jump to message|~/);
+    expect(slot.queryByTestId("estimated")).toBeNull();
+  });
+
+  it("marks list-price estimates in the figures, the children and the total, and says why", async () => {
+    const family = { ...FAMILY, estimated: true, children: FAMILY.children.map((c, i) => ({ ...c, estimated: i === 0 })) };
+    const slot = await renderPanel(backend(() => answer({ report: sampleReport({ estimated: true }), family })));
+    const kpis = slot.getByTestId("kpis").textContent ?? "";
+    for (const part of ["This thread~$4.82", "With 2 children~$6.64", "Per call~$0.21"]) expect(kpis).toContain(part);
+    expect(slot.getByTestId("estimated").textContent).toBe("~ Estimated at list price: this harness records no cost.");
+    const rows = slot.getByTestId("family").textContent ?? "";
+    expect(rows).toContain("14 calls~$1.10");
+    expect(rows).toContain("9 calls$0.72");
+    expect(slot.getByTestId("family-total").textContent).toBe("Total46 calls~$6.64");
   });
 
   it("lists turns newest first or costliest first, with the outlier in the warning tone", async () => {
@@ -94,9 +108,10 @@ describe("the Burn panel", () => {
     expect(document.activeElement).not.toBe(within(plain.container).getByRole("textbox", { name: "Budget in dollars" }));
   });
 
-  it("explains the wait and still lets a budget be set before pi reports", async () => {
+  it("explains the wait and still lets a budget be set before the first model call", async () => {
     const slot = await renderPanel(backend(() => answer({ report: null, reportedAt: null })));
-    expect(slot.getByTestId("waiting").textContent).toContain("Waiting for pi to report");
+    expect(slot.getByTestId("waiting").textContent).toContain("Waiting for the first model call");
+    expect(slot.getByTestId("waiting").textContent).not.toContain("Only pi threads");
     expect(slot.getByRole("textbox", { name: "Budget in dollars" })).toBeTruthy();
     expect(slot.queryByTestId("turns")).toBeNull();
   });

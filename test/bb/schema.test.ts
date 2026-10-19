@@ -35,7 +35,7 @@ describe("usageReportSchema", () => {
     const { turnCount, turns, days, running, budget, stoppedAt, ...rest } = sampleReport();
     const v1 = { ...rest, version: 1, series: rest.series.map(({ turn, ...p }) => p) };
     const parsed = usageReportSchema.parse(v1);
-    expect(parsed).toMatchObject({ version: 2, turnCount: 0, turns: [], days: [], utcDays: [], running: false, budget: null, stoppedAt: null });
+    expect(parsed).toMatchObject({ version: 2, turnCount: 0, turns: [], days: [], utcDays: [], running: false, budget: null, stoppedAt: null, estimated: false });
     expect(parsed.series.every((p) => p.turn === 0)).toBe(true);
   });
 
@@ -45,6 +45,12 @@ describe("usageReportSchema", () => {
     expect(usageReportSchema.parse(sampleReport()).utcDays).toEqual(sampleReport().utcDays);
     const tooMany = Array.from({ length: DAYS_MAX + 1 }, () => sampleReport().utcDays[0]);
     expect(usageReportSchema.safeParse({ ...sampleReport(), utcDays: tooMany }).success).toBe(false);
+  });
+
+  it("reads a report from Burn 0.2, which says nothing of estimates, as recorded", () => {
+    const { estimated, ...older } = sampleReport();
+    expect(usageReportSchema.parse(older).estimated).toBe(false);
+    expect(usageReportSchema.parse(sampleReport({ estimated: true })).estimated).toBe(true);
   });
 
   it("keeps a report at every array limit, UTC days included, under the 128 KiB a POST or host batch allows", () => {

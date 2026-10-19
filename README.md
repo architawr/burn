@@ -7,11 +7,11 @@ See what each thread has cost. Burn puts a pill such as `$4.82 +$0.31` in two fo
 
 Both halves support budgets. Burn warns at 80% and at 100% of a thread's budget. It never stops a thread unless you turn on the stop setting, which is off by default.
 
-The numbers are pi's own: every assistant message in a pi session already carries its cost, so there is no price table and nothing is estimated. Burn only supports pi threads for now.
+In bb, Burn counts every thread, whatever harness runs it. A pi thread's figures come from pi's session logs, where every assistant message already carries the cost pi recorded. Other harnesses, such as Codex and Claude Code, are read from the usage bb records for each thread, and Burn keeps its own copy of it. When a harness passes bb its own cost, Burn uses that cost as it is. Codex and Claude Code pass bb their tokens but no cost, so Burn prices their tokens with pi's list prices for OpenAI Codex and Anthropic models and marks every such amount as an estimate, for example `~$1.23`. A model without a known price shows tokens instead of dollars.
 
 ## Install
 
-The bb plugin alone is enough in bb: it reads each thread's cost from pi's session logs. The pi extension is optional. It gives the pill and `/burn` in the terminal, with or without bb, and in a bb thread it stops a run at its budget from inside pi, which is faster than stopping it through bb.
+The bb plugin alone is enough in bb: it reads a pi thread's cost from pi's session logs and any other thread's from the usage bb records. The pi extension is optional. It gives the pill and `/burn` in the terminal, with or without bb, and in a bb thread it stops a run at its budget from inside pi, which is faster than stopping it through bb.
 
 ```bash
 # pi extension
@@ -39,6 +39,8 @@ Threads that were already running show their cost as soon as the bb plugin is in
 ## How the halves connect
 
 The bb plugin has a host entry: code that bb runs on every connected machine. It reads the session log that bb's pi bridge keeps for each pi thread on that machine, builds the same report pi would, and watches the log folder, so the chip updates about a second after pi finishes a model call. It reads only the bytes pi appended since the last read. The plugin keeps the last figures a machine gave, so a thread on a machine that is offline still shows its cost. Whether a thread is working comes from bb's own thread status.
+
+The host entry reads only pi's logs. Other harnesses need no host code: their provider bridges, the adapters that connect an agent such as Codex to bb, already send bb a token-usage event after each model call or turn, and some send a running cost. bb tells the plugin within a second when a thread has new events, and the plugin reads them. bb deletes older usage events and keeps only the latest one for each thread, so Burn keeps its own copy of what it read in the plugin's database, and the figures survive a plugin reload.
 
 The pi extension's report is optional. bb ignores a pi extension's footer status, so in a bb thread the pi extension sends its numbers to the plugin. The plugin gives pi an address through the `BURN_BB_URL` environment variable, and pi posts a small JSON report when a run starts, after each model call, and when the run ends. Only bb's own pi reports (RPC mode); a `pi -p` started from a thread's shell does not. The figures still come from the session log; the report adds only what the log cannot know: the budget set with `/burn budget`, when pi stopped a run, and the context window.
 
@@ -84,14 +86,14 @@ Settings, in Burn's plugin settings:
 | Thread budget | none | A budget for every thread. A thread's own budget, set from the chip or the thread menu, overrides it. |
 | Daily budget | none | One notification a day when all threads together pass it. |
 | Budget alerts | on | Notifications at 80% and 100% of a thread's budget. |
-| Stop a thread at its budget | off | Stops the pi run whose cost crosses the budget: the pi extension stops the run itself; without it, Burn stops the thread's current work through bb. Sending another prompt continues. |
+| Stop a thread at its budget | off | Stops the run whose cost crosses the budget. In a pi thread with the pi extension, the extension stops the run itself; otherwise Burn stops the thread's current work through bb. Claude Code threads are not stopped, because their cost arrives only as each turn ends. Sending another prompt continues. |
 | Flag threads over budget | on | The red flame in the sidebar. |
 | Notify after an expensive prompt | off | A notification after a prompt that costs at least 3 times the thread's median and at least $0.50. |
 
 ## Troubleshooting
 
-- **Chip shows a dashed "—" in bb:** Burn found no session log for the thread on its machine and no report from pi. Check that it runs on pi and has had a first prompt, and that bb keeps its pi sessions in the default folder (see Limits).
-- **Chip is dimmed with an age such as "3h":** bb says the thread is working, but its session log has not changed since. The thread's pi process may have stopped.
+- **Chip shows a dashed "—" in bb:** the thread has made no model call yet, or its harness sends bb no usage. For a pi thread it also means that Burn found no session log on the thread's machine and no report from pi; check that bb keeps its pi sessions in the default folder (see Limits).
+- **Chip is dimmed with an age such as "3h":** bb says a pi thread is working, but its session log has not changed since, so pi may have stopped. Threads of other harnesses are never dimmed, because a Claude Code turn can run for minutes before bb records its usage.
 - **No chip in bb:** check that the **Cost chip** setting in Burn's plugin settings is on. `bb plugin list` should show `pi-burn` as running.
 - **Chip is in the thread header, not the footer:** bb's footer markup was not found (see Limits). The chip works the same there.
 - **No pill in pi:** the pill shows only in a terminal UI. `/burn` works in any mode.
@@ -99,15 +101,18 @@ Settings, in Burn's plugin settings:
 ## Limits
 
 - bb's footer has no plugin slot. The chip is a thread header action that moves itself next to the context circle by using bb's page markup (`[data-follow-up-composer-footer]`). If bb changes that markup the chip stays in the thread header.
-- The sidebar flag uses an experimental bb API; on a bb without it, the flag does not show. It covers every thread whose pi extension has reported, and other pi threads active in the last 30 days.
-- The Burn page counts the spend of every pi thread, by the days on which pi made the calls.
-- Costs are pi's recorded list prices, not what a proxy or a discount actually bills.
+- The sidebar flag uses an experimental bb API; on a bb without it, the flag does not show. It covers every thread whose pi extension has reported, and every other thread active in the last 30 days.
+- The Burn page counts the spend of every thread, by the days on which its model calls were made.
+- Dollar figures are list prices, either the ones pi recorded or Burn's estimates (`~$`). Neither knows about discounts or what a proxy actually bills. Estimates also price every cache write as a five-minute write, because bb's usage events do not say which writes were one-hour writes.
+- Claude Code threads update once per turn, do not count Claude Code's subagents, and are never stopped at their budget, though budget alerts still fire.
+- Router aliases such as `shopify/auto-best` have no known price, so their threads show tokens.
+- Usage that bb deleted before Burn first read a thread counts as one entry: the total is right, but the split by day and model is lost. Claude Code's running total can start again between turns, so for a Claude Code thread such usage is lost instead.
+- A harness that sends bb no usage shows nothing, and a cost in a currency other than US dollars is not converted, so that thread shows tokens.
 - A forked session counts only from its creation, so pi's own footer reads higher for it.
 - The server-side stop, used when the pi extension is not installed, ends the thread's current work through bb.
 - Session logs are read from `~/.bb/pi-bridge-sessions` on each machine. bb's pi bridge can be pointed elsewhere with `BB_PI_BRIDGE_SESSION_DIR`, but Burn does not follow it.
 - After a machine's bb daemon restarts, live updates for its threads resume within a minute.
 - pi orders status entries by key, so where the pill sits next to other markers is up to pi.
-- Providers other than pi (Claude Code, Codex) are not supported yet.
 
 ## Development
 

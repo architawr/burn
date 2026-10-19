@@ -31,7 +31,7 @@ describe("alertEvents", () => {
 
   it("jumps straight to over when one report crosses both thresholds", () => {
     const events = alertEvents(sampleReport({ cost: costOf(5) }), sampleReport({ cost: costOf(11) }), opts);
-    expect(events).toEqual([{ kind: "over", cost: 11, budget: 10 }]);
+    expect(events).toEqual([{ kind: "over", cost: 11, budget: 10, estimated: false }]);
     expect(alertFor(events[0]!, "thr_aaaaaaaa", "Job", 7)).toEqual({
       id: "over:thr_aaaaaaaa:10",
       kind: "over",
@@ -48,6 +48,20 @@ describe("alertEvents", () => {
     const next = sampleReport({ turns: [...turns, { ...turns[0]!, n: 5, cost: 0 }], turnCount: 5, running: true });
     expect(alertEvents(prev, next, opts).map((e) => (e.kind === "expensive" ? e.turn.n : e.kind))).toEqual([4]);
     expect(alertEvents(prev, next, { ...opts, notifyExpensiveTurn: false })).toEqual([]);
+  });
+
+  it("marks the amounts of a thread whose cost is a list-price estimate", () => {
+    const near = alertEvents(sampleReport({ cost: costOf(5) }), sampleReport({ cost: costOf(8.5), estimated: true }), opts);
+    expect(near).toEqual([{ kind: "near", cost: 8.5, budget: 10, estimated: true }]);
+    expect(alertFor(near[0]!, "thr_aaaaaaaa", "Job", 7).body).toBe("~$8.50 of the $10 thread budget (85%).");
+    expect(alertFor({ kind: "over", cost: 11, budget: 10, estimated: true }, "thr_aaaaaaaa", "Job", 7).body).toBe("~$11.00 spent, over the $10 thread budget.");
+
+    const turns = sampleReport().turns.map((t) => ({ ...t, cost: t.n === 4 ? 2 : 0.2 }));
+    const prev = sampleReport({ turns, turnCount: 4, running: false });
+    const next = sampleReport({ turns: [...turns, { ...turns[0]!, n: 5, cost: 0 }], turnCount: 5, running: true, estimated: true });
+    const [expensive] = alertEvents(prev, next, opts);
+    expect(expensive).toMatchObject({ kind: "expensive", estimated: true });
+    expect(alertFor(expensive!, "thr_aaaaaaaa", "Job", 7).body).toBe("Turn 4 cost ~$2.00, 10.0 times the thread's median turn.");
   });
 });
 

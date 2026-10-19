@@ -3,7 +3,7 @@ import { loadPluginApp, type MountedPluginContentScripts, mountPluginContentScri
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BurnAlert } from "../../extensions/bb/alerts.js";
 import type { rpcContract } from "../../extensions/bb/contract.js";
-import { setRowFlags } from "../../extensions/bb/flags.js";
+import { overBudgetStatus, setRowFlags } from "../../extensions/bb/flags.js";
 import { backend, OTHER, THREAD } from "./fixtures.js";
 
 const toast = vi.hoisted(() => Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() }));
@@ -36,7 +36,14 @@ async function renderOverlay(server: ReturnType<typeof backend>, settings: Recor
   return slot;
 }
 
-const overBudget = () => backend(undefined, { overBudget: () => ({ threads: [{ threadId: THREAD, cost: 12.4, budget: 10 }] }) });
+const overBudget = () => backend(undefined, { overBudget: () => ({ threads: [{ threadId: THREAD, cost: 12.4, budget: 10, estimated: false }] }) });
+
+describe("overBudgetStatus", () => {
+  it("marks a cost that is a list-price estimate", () => {
+    expect(overBudgetStatus({ threadId: THREAD, cost: 12.4, budget: 10, estimated: true }).label).toBe("Over budget · ~$12.40 of $10");
+    expect(overBudgetStatus({ threadId: THREAD, cost: 12.4, budget: 10, estimated: false }).label).toBe(FLAG.label);
+  });
+});
 
 describe("the row-status store", () => {
   it("sets, updates and clears flags through the content script, and clears them all on dispose", async () => {

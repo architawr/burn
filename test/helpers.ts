@@ -94,6 +94,7 @@ export function sampleReport(over: Partial<UsageReport> = {}): UsageReport {
     running: false,
     budget: null,
     stoppedAt: null,
+    estimated: false,
     ...over,
   };
 }

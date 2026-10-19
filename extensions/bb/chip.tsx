@@ -2,7 +2,7 @@ import { type PluginThreadHeaderActionProps, useBbNavigate, useSettings } from "
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { budgetFraction, budgetState } from "../../src/budget.js";
-import { formatAgo, formatBudget, formatDelta, formatTokens, formatUsd, isTokenOnly } from "../../src/format.js";
+import { formatAgo, formatBudget, formatCost, formatDelta, formatTokens, isTokenOnly } from "../../src/format.js";
 import { BurnCard } from "./card.js";
 import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover.js";
 import type { UsageAnswer } from "./contract.js";
@@ -36,7 +36,7 @@ export interface ChipView {
   title: string;
 }
 
-const WAITING_TITLE = "Waiting for pi to report. Burn shows the cost after the thread's first prompt, from pi's session log.";
+const WAITING_TITLE = "Waiting for the first model call. Burn shows the thread's cost once it has used a model.";
 
 /** What the chip shows for an answer; pure so every state can be tested. */
 export function chipView(answer: UsageAnswer | null, opts: { now: number; fresh: boolean; chipShows: "delta" | "cost" }): ChipView {
@@ -51,15 +51,16 @@ export function chipView(answer: UsageAnswer | null, opts: { now: number; fresh:
       running: false,
       stale: false,
       tokenOnly: false,
-      label: "Thread cost: waiting for pi to report. Click for details.",
+      label: "Thread cost: waiting for the first model call. Click for details.",
       title: WAITING_TITLE,
     };
   }
   const tokenOnly = isTokenOnly(report);
   const t = report.tokens;
-  const value = tokenOnly ? formatTokens(t.input + t.output + t.cacheRead + t.cacheWrite) : formatUsd(report.cost.total);
+  const value = tokenOnly ? formatTokens(t.input + t.output + t.cacheRead + t.cacheWrite) : formatCost(report);
   const reportedAt = answer?.reportedAt ?? opts.now;
-  const stale = report.running && opts.now - reportedAt >= STALE_MS;
+  // A Claude Code turn can run for minutes before bb records its usage, so silence there is not a stall.
+  const stale = answer?.source !== "events" && report.running && opts.now - reportedAt >= STALE_MS;
   const budget = answer?.budget?.amount ?? null;
   const state = tokenOnly ? "none" : budgetState(report.cost.total, budget);
   const tone: ChipTone = state === "near" || state === "over" ? state : "default";
@@ -70,6 +71,7 @@ export function chipView(answer: UsageAnswer | null, opts: { now: number; fresh:
   else if (opts.chipShows === "delta" && !tokenOnly && (running || opts.fresh)) suffix = { kind: "delta", text: formatDelta(report.lastTurnCost) };
   const total = `${value}${tokenOnly ? " tok" : ""}`;
   const budgetNote = budget !== null && !tokenOnly ? ` of ${formatBudget(budget)}` : "";
+  const estimate = report.estimated ? " Estimated at list price." : "";
   return {
     tone,
     value,
@@ -81,8 +83,8 @@ export function chipView(answer: UsageAnswer | null, opts: { now: number; fresh:
     tokenOnly,
     label: `Thread cost ${total}${budgetNote}. Click for the breakdown.`,
     title: stale
-      ? `Thread cost ${total}. pi has not reported for ${formatAgo(reportedAt, opts.now)} while it was working.`
-      : `Thread cost ${total}${budgetNote}${running ? ", pi is working" : ""}. Click for the breakdown.`,
+      ? `Thread cost ${total}. Burn has seen no new usage for ${formatAgo(reportedAt, opts.now)} while the thread was working.${estimate}`
+      : `Thread cost ${total}${budgetNote}${running ? ", the thread is working" : ""}. Click for the breakdown.${estimate}`,
   };
 }
 

@@ -1,6 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { budgetState } from "../../../src/budget.js";
-import { formatBudget, formatUsd, median, modelName } from "../../../src/format.js";
+import { formatAmount, formatBudget, median, modelName } from "../../../src/format.js";
 import { type DayRow, dayKey, OTHER_KEY, TOOLS_KEY, type UsageReport } from "../../../src/report.js";
 import type { BurnAlert } from "../alerts.js";
 import { REPORT_PREFIX } from "../keys.js";
@@ -262,6 +262,7 @@ export function createSpendHandlers(deps: SpendDeps): {
         total: row.report.cost.total,
         budget,
         running: row.report.running,
+        estimated: row.report.estimated,
       }));
 
       const total = counted.reduce((sum, row) => sum + row.rangeCost, 0);
@@ -292,6 +293,7 @@ export function createSpendHandlers(deps: SpendDeps): {
           .sort((a, b) => a.name.localeCompare(b.name)),
         dailyBudget,
         reportedThreads,
+        estimated: counted.some((row) => row.report.estimated),
       };
     },
   };
@@ -311,7 +313,14 @@ function signature(raw: unknown): string | null {
   return typeof sentAt === "number" && typeof at === "number" ? `${sentAt}:${at}` : null;
 }
 
-async function todaySpend(bb: BbPluginApi, today: string): Promise<{ cost: number; threads: number }> {
+interface DaySpend {
+  cost: number;
+  threads: number;
+  /** Some of the cost is a list-price estimate. */
+  estimated: boolean;
+}
+
+async function todaySpend(bb: BbPluginApi, today: string): Promise<DaySpend> {
   const memo = daysByHost.get(bb) ?? new Map<string, { sig: string; days: DayRow[] | null }>();
   daysByHost.set(bb, memo);
   const entries = await readEntries(bb);
@@ -332,18 +341,23 @@ async function todaySpend(bb: BbPluginApi, today: string): Promise<{ cost: numbe
     if (spent > 0) threads++;
     cost += spent;
   }
-  return { cost, threads };
+  // Only Burn pi extensions store reports here, and pi records every cost.
+  return { cost, threads, estimated: false };
 }
 
-function todayFrom(entries: Entry[], today: string): { cost: number; threads: number } {
+function todayFrom(entries: Entry[], today: string): DaySpend {
   let cost = 0;
   let threads = 0;
+  let estimated = false;
   for (const { report } of entries) {
     const spent = report.days.find((d) => d.day === today)?.cost ?? 0;
-    if (spent > 0) threads++;
+    if (spent > 0) {
+      threads++;
+      estimated ||= report.estimated;
+    }
     cost += spent;
   }
-  return { cost, threads };
+  return { cost, threads, estimated };
 }
 
 async function checkOnce(deps: SpendDeps): Promise<BurnAlert | null> {
@@ -353,7 +367,9 @@ async function checkOnce(deps: SpendDeps): Promise<BurnAlert | null> {
   const today = dayKey(at);
   const key = dailyAlertKey(today);
   if ((await deps.bb.storage.kv.get(key)) !== undefined) return null;
-  const { cost, threads } = deps.reports ? todayFrom(await deps.reports(dayDate(today).getTime() - DAY_MS), today) : await todaySpend(deps.bb, today);
+  const { cost, threads, estimated } = deps.reports
+    ? todayFrom(await deps.reports(dayDate(today).getTime() - DAY_MS), today)
+    : await todaySpend(deps.bb, today);
   if (cost < budget) return null;
   await deps.bb.storage.kv.set(key, { at });
   return {
@@ -361,7 +377,7 @@ async function checkOnce(deps: SpendDeps): Promise<BurnAlert | null> {
     kind: "daily",
     threadId: null,
     title: "Daily budget reached",
-    body: `${formatUsd(cost)} spent across ${threads} ${threads === 1 ? "thread" : "threads"} today, over the ${formatBudget(budget)} daily budget.`,
+    body: `${formatAmount(cost, estimated)} spent across ${threads} ${threads === 1 ? "thread" : "threads"} today, over the ${formatBudget(budget)} daily budget.`,
     at,
   };
 }

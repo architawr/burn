@@ -1,13 +1,13 @@
 import { budgetAlert, isExpensiveTurn } from "../../src/budget.js";
-import { formatBudget, formatUsd, turnMultiple } from "../../src/format.js";
+import { formatAmount, formatBudget, turnMultiple } from "../../src/format.js";
 import type { TurnRow, UsageReport } from "../../src/report.js";
 import type { BurnAlert } from "./alerts.js";
 
-/** Something a new report changed that deserves a toast, before it has words. */
+/** Something a new report changed that deserves a toast, before it has words. `estimated`: its amounts are list-price estimates. */
 export type AlertEvent =
-  | { kind: "near" | "over"; cost: number; budget: number }
+  | { kind: "near" | "over"; cost: number; budget: number; estimated: boolean }
   | { kind: "stopped"; stoppedAt: number; budget: number | null }
-  | { kind: "expensive"; turn: TurnRow; multiple: number };
+  | { kind: "expensive"; turn: TurnRow; multiple: number; estimated: boolean };
 
 export interface AlertOptions {
   /** The thread's effective budget in dollars, or null. */
@@ -33,7 +33,7 @@ export function alertEvents(prev: UsageReport | null, next: UsageReport, opts: A
   const events: AlertEvent[] = [];
   if (opts.budgetAlerts && opts.budget !== null) {
     const crossed = budgetAlert(prev.cost.total, next.cost.total, opts.budget);
-    if (crossed !== null) events.push({ kind: crossed, cost: next.cost.total, budget: opts.budget });
+    if (crossed !== null) events.push({ kind: crossed, cost: next.cost.total, budget: opts.budget, estimated: next.estimated });
   }
   if (next.stoppedAt !== null && next.stoppedAt !== prev.stoppedAt) {
     events.push({ kind: "stopped", stoppedAt: next.stoppedAt, budget: opts.budget });
@@ -41,7 +41,7 @@ export function alertEvents(prev: UsageReport | null, next: UsageReport, opts: A
   if (opts.notifyExpensiveTurn) {
     for (const turn of finishedTurns(prev, next)) {
       const multiple = turnMultiple(turn, next.turns);
-      if (multiple !== null && isExpensiveTurn(turn, next.turns)) events.push({ kind: "expensive", turn, multiple });
+      if (multiple !== null && isExpensiveTurn(turn, next.turns)) events.push({ kind: "expensive", turn, multiple, estimated: next.estimated });
     }
   }
   return events;
@@ -58,7 +58,7 @@ export function alertFor(event: AlertEvent, threadId: string, threadTitle: strin
         kind: "near",
         threadId,
         title: `${name} is near its budget`,
-        body: `${formatUsd(event.cost)} of the ${formatBudget(event.budget)} thread budget (${share}%).`,
+        body: `${formatAmount(event.cost, event.estimated)} of the ${formatBudget(event.budget)} thread budget (${share}%).`,
         at,
       };
     }
@@ -68,7 +68,7 @@ export function alertFor(event: AlertEvent, threadId: string, threadTitle: strin
         kind: "over",
         threadId,
         title: `${name} is over its budget`,
-        body: `${formatUsd(event.cost)} spent, over the ${formatBudget(event.budget)} thread budget.`,
+        body: `${formatAmount(event.cost, event.estimated)} spent, over the ${formatBudget(event.budget)} thread budget.`,
         at,
       };
     case "stopped":
@@ -86,7 +86,7 @@ export function alertFor(event: AlertEvent, threadId: string, threadTitle: strin
         kind: "expensive",
         threadId,
         title: `An expensive turn in ${name}`,
-        body: `Turn ${event.turn.n} cost ${formatUsd(event.turn.cost)}, ${event.multiple.toFixed(1)} times the thread's median turn.`,
+        body: `Turn ${event.turn.n} cost ${formatAmount(event.turn.cost, event.estimated)}, ${event.multiple.toFixed(1)} times the thread's median turn.`,
         at,
       };
   }

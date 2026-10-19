@@ -4,6 +4,12 @@ const BARS = "▁▂▃▄▅▆▇█";
 
 export const formatUsd = (n: number): string => (n > 0 && n < 0.005 ? "<$0.01" : `$${n.toFixed(2)}`);
 
+/** Dollars, with a tilde when the amount is a list-price estimate: "~$1.23". */
+export const formatAmount = (n: number, estimated: boolean): string => `${estimated ? "~" : ""}${formatUsd(n)}`;
+
+/** A report's total cost, marked when it is an estimate. */
+export const formatCost = (report: UsageReport): string => formatAmount(report.cost.total, report.estimated);
+
 /** A cost change since the last user message: "+$0.31", or "<$0.01" when it rounds to nothing. */
 export const formatDelta = (n: number): string => (n < 0.005 ? "<$0.01" : `+${formatUsd(n)}`);
 
@@ -92,7 +98,7 @@ export function median(values: readonly number[]): number | null {
 export function usageLabel(report: UsageReport): string {
   const t = report.tokens;
   const tokens = t.input + t.output + t.cacheRead + t.cacheWrite;
-  return report.cost.total > 0 || tokens === 0 ? formatUsd(report.cost.total) : `${formatTokens(tokens)} tok`;
+  return report.cost.total > 0 || tokens === 0 ? formatCost(report) : `${formatTokens(tokens)} tok`;
 }
 
 /** True when the report has tokens but no cost, so labels show tokens. */

@@ -34,6 +34,16 @@ const settle = async () => act(async () => {});
 const chipButton = (slot: RenderedSlot) => within(slot.container).findByRole("button", { name: /Thread cost/ });
 const costOf = (total: number) => ({ input: total, output: 0, cacheRead: 0, cacheWrite: 0, total });
 
+const FAMILY = {
+  total: 49.97,
+  calls: 581,
+  estimated: false,
+  children: [
+    { threadId: "thr_cccccccc", title: "Kevin", cost: 8.92, calls: 105, running: false, model: null, estimated: false },
+    { threadId: "thr_dddddddd", title: "Pedro", cost: 14.11, calls: 172, running: false, model: null, estimated: false },
+  ],
+};
+
 async function openCard(slot: RenderedSlot) {
   fireEvent.click(await chipButton(slot));
   return within(await slot.findByRole("dialog"));
@@ -53,8 +63,9 @@ describe("chipView", () => {
   it("waits with a dash, never $0.00, and says why", () => {
     const waiting = view(answer({ report: null, reportedAt: null }));
     expect(waiting).toMatchObject({ tone: "waiting", value: "—", suffix: null });
-    expect(waiting.title).toContain("pi's session log");
-    expect(waiting.title).not.toMatch(/restart/i);
+    expect(waiting.title).toBe("Waiting for the first model call. Burn shows the thread's cost once it has used a model.");
+    expect(waiting.label).toBe("Thread cost: waiting for the first model call. Click for details.");
+    expect(waiting.title).not.toMatch(/restart|\bpi\b/i);
   });
 
   it("reads the same whether the figures come from pi's report or its session log", () => {
@@ -81,6 +92,24 @@ describe("chipView", () => {
   it("dims a running thread that stopped reporting, with its age", () => {
     const stale = view(answer({ report: sampleReport({ running: true }), reportedAt: now - STALE_MS - 60_000 }));
     expect(stale).toMatchObject({ stale: true, running: false, suffix: { kind: "age", text: "· 6m" } });
+    expect(stale.title).toBe("Thread cost $4.82. Burn has seen no new usage for 6m while the thread was working.");
+    expect(view(answer({ report: sampleReport({ running: true }), reportedAt: now - 1000 })).title).toBe(
+      "Thread cost $4.82, the thread is working. Click for the breakdown.",
+    );
+  });
+
+  it("never dims a thread read from bb's usage events, whose turn can run for minutes before bb records its usage", () => {
+    const long = view(answer({ source: "events", report: sampleReport({ running: true }), reportedAt: now - STALE_MS - 60_000 }));
+    expect(long).toMatchObject({ stale: false, running: true });
+  });
+
+  it("marks a list-price estimate with a tilde and says so", () => {
+    const guess = answer({ report: sampleReport({ estimated: true }) });
+    expect(view(guess)).toMatchObject({ value: "~$4.82" });
+    expect(view(guess).title).toBe("Thread cost ~$4.82. Click for the breakdown. Estimated at list price.");
+    const stale = view(answer({ report: sampleReport({ estimated: true, running: true }), reportedAt: now - STALE_MS - 60_000 }));
+    expect(stale.title).toMatch(/while the thread was working\. Estimated at list price\.$/);
+    expect(view(answer()).title).not.toContain("Estimated");
   });
 
   it("shows tokens when the provider reports no cost", () => {
@@ -103,11 +132,13 @@ describe("Burn chip", () => {
     expect(pill.textContent).toBe("$4.82");
     expect(pill.className).toContain("rounded-full");
     expect(pill.querySelector("[data-burn-flame]")).not.toBeNull();
+    const guess = await renderChip(backend(() => answer({ report: sampleReport({ estimated: true }) })));
+    expect((await chipButton(guess)).textContent).toBe("~$4.82");
   });
 
-  it("reads a dash with a dashed outline before pi reports, and $0.00 for a report with no calls", async () => {
+  it("reads a dash with a dashed outline before the first model call, and $0.00 for a report with no calls", async () => {
     const none = await renderChip(backend(() => answer({ report: null, reportedAt: null })));
-    const waiting = await none.findByRole("button", { name: /waiting for pi to report/ });
+    const waiting = await none.findByRole("button", { name: /waiting for the first model call/ });
     expect(waiting.textContent).toBe("—");
     expect(waiting.className).toContain("border-dashed");
     expect(waiting.getAttribute("title")).not.toMatch(/restart/i);
@@ -211,19 +242,20 @@ describe("the chip's popover", () => {
   });
 
   it("adds the child threads' cost, and says when the figures last changed wherever they come from", async () => {
-    const family = {
-      total: 49.97,
-      calls: 581,
-      children: [
-        { threadId: "thr_cccccccc", title: "Kevin", cost: 8.92, calls: 105, running: false, model: null },
-        { threadId: "thr_dddddddd", title: "Pedro", cost: 14.11, calls: 172, running: false, model: null },
-      ],
-    };
-    const slot = await renderChip(backend(() => answer({ source: "log", family })));
+    const slot = await renderChip(backend(() => answer({ source: "log", family: FAMILY })));
     const card = await openCard(slot);
     expect(card.getByTestId("with-children").textContent).toBe("$49.97 with 2 child threads");
     expect(card.getByText(/^updated \d+s ago$/)).toBeTruthy();
     expect(card.queryByText(/from pi's log|restart/i)).toBeNull();
+    expect(card.queryByTestId("estimated")).toBeNull();
+  });
+
+  it("marks a list-price estimate in the total and the family line, and says why", async () => {
+    const slot = await renderChip(backend(() => answer({ report: sampleReport({ estimated: true }), family: { ...FAMILY, estimated: true } })));
+    const card = await openCard(slot);
+    expect(card.getByTestId("burn-card").textContent).toContain("~$4.82");
+    expect(card.getByTestId("with-children").textContent).toBe("~$49.97 with 2 child threads");
+    expect(card.getByTestId("estimated").textContent).toBe("~ Estimated at list price: this harness records no cost.");
   });
 
   it("refetches only on signals, never on a timer, even for figures from a session log", async () => {
@@ -237,12 +269,14 @@ describe("the chip's popover", () => {
     interval.mockRestore();
   });
 
-  it("explains the wait when pi has not reported", async () => {
+  it("explains the wait before the first model call", async () => {
     const slot = await renderChip(backend(() => answer({ report: null, reportedAt: null })));
-    fireEvent.click(await slot.findByRole("button", { name: /waiting for pi/ }));
+    fireEvent.click(await slot.findByRole("button", { name: /waiting for the first model call/ }));
     const card = within(await slot.findByRole("dialog"));
-    expect(card.getByTestId("waiting").textContent).toContain("Waiting for pi to report");
-    expect(card.getByTestId("waiting").textContent).toContain("once pi has written its session log");
+    expect(card.getByTestId("waiting").textContent).toContain("Waiting for the first model call");
+    expect(card.getByTestId("waiting").textContent).toContain(
+      "from pi's session log in pi threads, and from the usage bb records for other harnesses. Claude Code reports as each turn ends.",
+    );
     expect(card.getByTestId("waiting").textContent).not.toMatch(/restart/i);
   });
 

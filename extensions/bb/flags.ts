@@ -1,5 +1,5 @@
 import type { PluginComposerThreadRowStatus, PluginContentScriptContext } from "@get-bb/plugin-sdk/app";
-import { formatBudget, formatUsd } from "../../src/format.js";
+import { formatAmount, formatBudget } from "../../src/format.js";
 import type { OverBudgetRow } from "./contract.js";
 import { FLAME_ICON } from "./icon.js";
 
@@ -36,7 +36,7 @@ export function setRowFlags(next: ReadonlyMap<string, RowStatus>): void {
 
 export const overBudgetStatus = (row: OverBudgetRow): RowStatus => ({
   icon: FLAME_ICON,
-  label: `Over budget · ${formatUsd(row.cost)} of ${formatBudget(row.budget)}`,
+  label: `Over budget · ${formatAmount(row.cost, row.estimated)} of ${formatBudget(row.budget)}`,
   tone: "error",
 });
 

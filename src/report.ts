@@ -66,6 +66,8 @@ export interface UsageReport {
   budget: number | null;
   /** Set by the pi extension: when Burn last stopped a run at the budget (only with stop at budget on). */
   stoppedAt: number | null;
+  /** Some of the cost is a list-price estimate rather than recorded by the harness. */
+  estimated: boolean;
 }
 
 /** Structural on purpose: pi's SessionEntry interfaces are assignable, and tests use plain objects. */
@@ -91,6 +93,8 @@ interface Usage {
   cacheWrite: number;
   reasoning?: number;
   cost: CostParts;
+  /** The cost came from a list price, not from the harness. */
+  estimated?: boolean;
 }
 
 interface Row {
@@ -340,6 +344,7 @@ export function buildReport(
   let turnCount = 0;
   let calls = 0;
   let lastTurnCost = 0;
+  let estimated = false;
   let started = false;
   let startedAt = 0;
   let updatedAt = 0;
@@ -377,6 +382,7 @@ export function buildReport(
     cost.cacheWrite += usage.cost.cacheWrite;
     cost.total += usage.cost.total;
     lastTurnCost += usage.cost.total;
+    if (usage.estimated === true && usage.cost.total > 0) estimated = true;
 
     const row = models.get(key) ?? { key, cost: 0, tokens: 0, calls: 0 };
     row.cost += usage.cost.total;
@@ -427,5 +433,6 @@ export function buildReport(
     running: false,
     budget: null,
     stoppedAt: null,
+    estimated,
   };
 }

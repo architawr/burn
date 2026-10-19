@@ -7,8 +7,10 @@ import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHostEntry } from "../../extensions/bb/host/entry.js";
 import { sessionFile } from "../../extensions/bb/host/pi-sessions.js";
+import type { EventRow } from "../../extensions/bb/ledger.js";
 import { createReportSource } from "../../extensions/bb/sources.js";
 import { assistant, sampleReport, user } from "../helpers.js";
+import { CODEX_1, CODEX_1_2, CODEX_2, listEvents, requestEvent, usageEvent } from "./fixtures.js";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -25,6 +27,7 @@ type Thread = { host: string | null; provider?: string; status?: "active" | "idl
 /** A source over fake threads; each host answers with `costs[threadId]`, or throws when listed in `offline`. */
 function setup(threads: Record<string, Thread>, opts: { offline?: string[] } = {}) {
   const costs: Record<string, number> = {};
+  const rows: EventRow[] = [];
   const calls: ExperimentalFakeHostRpcCall[] = [];
   const offline = new Set(opts.offline ?? []);
   let gate: Promise<void> | null = null;
@@ -41,8 +44,15 @@ function setup(threads: Record<string, Thread>, opts: { offline?: string[] } = {
           return makeThreadResponse({ id: threadId, providerId: t.provider ?? "pi", environmentId: t.host ? `env_${t.host}` : null, status: t.status ?? "idle" });
         },
         events: {
-          list: async ({ threadId }: { threadId: string }) =>
-            (threads[threadId]?.sessions ?? [`pi_${threadId}`]).map((providerThreadId, seq) => ({ type: "thread/identity", threadId, seq, data: { providerThreadId } })),
+          list: async (args: Parameters<ReturnType<typeof listEvents>>[0]) =>
+            args.types?.includes("thread/identity")
+              ? (threads[args.threadId]?.sessions ?? [`pi_${args.threadId}`]).map((providerThreadId, seq) => ({
+                  type: "thread/identity",
+                  threadId: args.threadId,
+                  seq,
+                  data: { providerThreadId },
+                }))
+              : listEvents(() => rows)(args),
         },
       },
       environments: { get: async ({ environmentId }: { environmentId: string }) => ({ id: environmentId, hostId: environmentId.slice(4) }) },
@@ -90,7 +100,7 @@ function setup(threads: Record<string, Thread>, opts: { offline?: string[] } = {
     });
     return release;
   };
-  return { bb, harness, source, costs, calls, asked, cost, changed, offline, hold, holdLookups, tick: (ms: number) => (now += ms) };
+  return { bb, harness, source, costs, rows, calls, asked, cost, changed, offline, hold, holdLookups, tick: (ms: number) => (now += ms) };
 }
 
 describe("createReportSource", () => {
@@ -101,6 +111,7 @@ describe("createReportSource", () => {
     for (const t of Object.keys(threads)) s.costs[t] = 1;
     const got = await s.source.reportsOf(Object.keys(threads));
     expect(got.size).toBe(46);
+    expect([...got.values()].every((r) => r.source === "log")).toBe(true);
     expect(s.asked(A).map((batch) => batch.length)).toEqual([40, 5]);
     expect(s.asked(B)).toEqual([[id(100)]]);
     const input = s.calls.find((c) => c.hostId === B)?.input;
@@ -189,11 +200,28 @@ describe("createReportSource", () => {
     expect(await s.cost(id(1))).toEqual([6]);
   });
 
-  it("asks no host for a thread of another provider, or one without a machine", async () => {
+  it("reads a thread of another provider from the usage bb records and asks no host, nor for a thread without a machine", async () => {
     const s = setup({ [id(1)]: { host: A, provider: "codex" }, [id(2)]: { host: null } });
-    expect((await s.source.reportsOf([id(1), id(2), id(3)])).size).toBe(0);
+    s.rows.push(requestEvent(id(1), "go", "gpt-5.5"), usageEvent(id(1), CODEX_1));
+    const got = await s.source.reportsOf([id(1), id(2), id(3)]);
+    expect([...got.keys()]).toEqual([id(1)]);
+    expect(got.get(id(1))).toMatchObject({ source: "events", report: { estimated: true } });
+    expect(got.get(id(1))?.report.cost.total).toBeCloseTo(0.053, 9);
     expect(s.calls).toEqual([]);
     expect(s.harness.inspection.logEntries.some((e) => e.level === "warn" && e.message.includes(id(3)))).toBe(true);
+    expect(await s.source.harnessOf(id(1))).toMatchObject({ reader: "events", perCall: true });
+    expect(await s.source.harnessOf(id(2))).toMatchObject({ reader: "pi-log" });
+    expect(await s.source.harnessOf(id(3))).toBeNull();
+  });
+
+  it("reads a thread of another provider again when bb says it went idle", async () => {
+    const s = setup({ [id(1)]: { host: A, provider: "codex" } });
+    s.rows.push(requestEvent(id(1), "go", "gpt-5.5"), usageEvent(id(1), CODEX_1));
+    expect(await s.cost(id(1))).toEqual([expect.closeTo(0.053, 9)]);
+    s.rows.push(usageEvent(id(1), CODEX_1_2, CODEX_2));
+    await s.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: id(1), providerId: "codex", status: "idle" }), lastAssistantText: null });
+    expect(s.changed).toEqual([[id(1)]]);
+    expect(await s.cost(id(1))).toEqual([expect.closeTo(0.141, 9)]);
   });
 
   it("says a thread is running while bb says it is active, following thread events", async () => {
@@ -209,7 +237,7 @@ describe("createReportSource", () => {
     await s.harness.behavior.emitThreadEvent("thread.failed", { thread: makeThreadResponse({ id: id(1), providerId: "pi", status: "error" }), error: "boom" });
     expect(await s.source.running(id(1))).toBe(false);
     await s.harness.behavior.emitThreadEvent("thread.active", { thread: makeThreadResponse({ id: id(3), providerId: "codex", status: "active" }) });
-    expect(s.changed).toEqual([[id(2)], [id(2)], [id(1)]]);
+    expect(s.changed).toEqual([[id(2)], [id(2)], [id(1)], [id(3)]]);
   });
 
   it("keeps the status a thread event set while a lookup of that thread was under way", async () => {
@@ -233,7 +261,7 @@ describe("createReportSource", () => {
     await s.source.reportsOf([id(1)]);
     const sent = s.calls.map((c) => (c.input as { threads: { sessionIds: string[] }[] }).threads[0]?.sessionIds);
     expect(sent).toEqual([[id(1)], ["pi_started", id(1)]]);
-    s.source.forget(id(1));
+    await s.source.forget(id(1));
     await s.source.reportsOf([id(1)]);
     expect(s.harness.inspection.sdk.callsTo("threads.events.list")).toHaveLength(3);
   });

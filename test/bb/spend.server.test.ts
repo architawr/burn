@@ -222,10 +222,31 @@ describe("spend", () => {
       total: 112,
       budget: null,
       running: true,
+      estimated: false,
     });
     expect(out.threads[1]?.title).toBe("Fix the flaky test");
     expect(out.threads[2]?.title).toBe("Untitled thread");
     expect(out.threads[2]?.running).toBe(false);
+  });
+
+  it("marks each estimated thread, and says when the spend it counts includes one", async () => {
+    const threads: Record<string, Seed> = { thr_aaaaaa01: {}, thr_aaaaaa02: {}, thr_aaaaaa03: {} };
+    const s = await setup({
+      reports: {
+        thr_aaaaaa01: reportWith([day(0, 2)], { estimated: true }),
+        thr_aaaaaa02: reportWith([day(0, 1)]),
+        thr_aaaaaa03: reportWith([day(20, 5)], { estimated: true }),
+      },
+      threads,
+    });
+    const out = await s.spend({ range: "7d", projectId: null });
+    expect(out.estimated).toBe(true);
+    expect(out.threads.map((t) => [t.threadId, t.estimated])).toEqual([
+      ["thr_aaaaaa01", true],
+      ["thr_aaaaaa02", false],
+    ]);
+    const exact = await setup({ reports: { thr_aaaaaa02: reportWith([day(0, 1)]), thr_aaaaaa03: reportWith([day(20, 5)], { estimated: true }) }, threads });
+    expect((await exact.spend({ range: "7d", projectId: null })).estimated).toBe(false);
   });
 
   it("sums each thread's UTC days over UTC calendar days when asked, and says which", async () => {
@@ -421,6 +442,16 @@ describe("daily budget alert", () => {
       id: `daily:${ago(-1)}`,
       body: "$60.00 spent across 1 thread today, over the $50 daily budget.",
     });
+  });
+
+  it("marks the day's spend as an estimate when a thread that spent today is one", async () => {
+    const s = await setup({ reports: {}, threads: {}, daily: 1 });
+    const reports = async () => [
+      { threadId: "thr_eeeeee01", report: reportWith([day(0, 0.6)], { estimated: true }) },
+      { threadId: "thr_eeeeee02", report: reportWith([day(0, 0.5)]) },
+      { threadId: "thr_eeeeee03", report: reportWith([day(1, 9)], { estimated: true }) },
+    ];
+    expect(await checkDailyBudget({ ...s.deps, reports })).toMatchObject({ body: "~$1.10 spent across 2 threads today, over the $1 daily budget." });
   });
 
   it("fires once when two reports arrive together", async () => {

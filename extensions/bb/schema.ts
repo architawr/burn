@@ -72,6 +72,8 @@ const v2Schema = z.object({
   running: z.boolean(),
   budget: z.number().finite().positive().nullable(),
   stoppedAt: amount.nullable(),
+  // Burn 0.2 extensions send none.
+  estimated: z.boolean().default(false),
 });
 
 /**
@@ -92,6 +94,7 @@ export const usageReportSchema: z.ZodType<UsageReport, unknown> = z.union([
       running: false,
       budget: null,
       stoppedAt: null,
+      estimated: false,
     }),
   ),
 ]);

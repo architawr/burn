@@ -137,7 +137,27 @@ describe("buildReport", () => {
   });
 
   it("starts as a v2 report that is not running and has no budget", () => {
-    expect(buildReport([], undefined)).toMatchObject({ version: 2, running: false, budget: null, stoppedAt: null, turns: [], days: [], utcDays: [] });
+    expect(buildReport([], undefined)).toMatchObject({
+      version: 2,
+      running: false,
+      budget: null,
+      stoppedAt: null,
+      estimated: false,
+      turns: [],
+      days: [],
+      utcDays: [],
+    });
+  });
+
+  it("is an estimate when a counted usage with a cost is a list-price estimate, and never from pi's entries", () => {
+    const guess = (total: number) => {
+      const entry = assistant(total);
+      return { ...entry, message: { ...entry.message, usage: { ...entry.message.usage, estimated: true } } };
+    };
+    expect(buildReport([user(), assistant(1), guess(0.5)], undefined).estimated).toBe(true);
+    expect(buildReport([user(), assistant(1), guess(0)], undefined).estimated).toBe(false);
+    expect(buildReport([user(), assistant(1), toolResult(2), usageEntry(3), compaction(4)], undefined).estimated).toBe(false);
+    expect(JSON.stringify(slimEntry(guess(0.5)))).not.toContain("estimated");
   });
 
   it("counts only entries at or after countFrom, so a fork skips its parent's copied calls", () => {

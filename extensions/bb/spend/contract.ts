@@ -35,14 +35,17 @@ export const spendOutputSchema = z.object({
       total: amount,
       budget: amount.nullable(),
       running: z.boolean(),
+      estimated: z.boolean(),
     }),
   ),
   projects: z.array(z.object({ projectId: z.string().nullable(), name: z.string(), cost: amount })),
   models: z.array(z.object({ key: z.string(), cost: amount })),
   projectOptions: z.array(z.object({ projectId: z.string(), name: z.string() })),
   dailyBudget: amount.nullable(),
-  /** Threads with a stored report in any project and at any time; 0 means pi has never reported. */
+  /** Threads with a stored report in any project and at any time; 0 means no thread has reported. */
   reportedThreads: z.number().int().nonnegative(),
+  /** Some counted spend is a list-price estimate. */
+  estimated: z.boolean(),
 });
 export type SpendOutput = z.infer<typeof spendOutputSchema>;
 

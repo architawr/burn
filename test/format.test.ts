@@ -51,6 +51,17 @@ describe("usageLabel", () => {
     const { buildReport } = await import("../src/report.js");
     expect(usageLabel(buildReport([], undefined))).toBe("$0.00");
   });
+
+  it("marks a list-price estimate with a tilde", async () => {
+    const { formatAmount, formatCost, usageLabel } = await import("../src/format.js");
+    const { sampleReport } = await import("./helpers.js");
+    const guess = sampleReport({ estimated: true, cost: { input: 1, output: 0.23, cacheRead: 0, cacheWrite: 0, total: 1.23 } });
+    expect(usageLabel(guess)).toBe("~$1.23");
+    expect(formatCost(guess)).toBe("~$1.23");
+    expect(formatCost(sampleReport())).toBe("$4.82");
+    expect(formatAmount(0.001, true)).toBe("~<$0.01");
+    expect(formatAmount(2, false)).toBe("$2.00");
+  });
 });
 
 describe("formatDelta", () => {
