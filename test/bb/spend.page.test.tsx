@@ -337,6 +337,25 @@ describe("Spend page", () => {
     await act(async () => {});
   });
 
+  it("keeps the chosen days when a usage signal from before the switch refetches", async () => {
+    const server = backend((input) => {
+      const tz = input.tz ?? "local";
+      return output(input.range, { tz, total: tz === "utc" ? 88.1 : 97.4 });
+    });
+    const slot = render(server);
+    await slot.findByText("$97.40");
+
+    await slot.behavior.emitRealtime("usage", { threadId: "thr_aaaaaa01" });
+    fireEvent.click(within(slot.getByRole("group", { name: "Days" })).getByRole("button", { name: "UTC" }));
+    expect(await slot.findByText("$88.10")).toBeTruthy();
+
+    await waitFor(() => expect(server.inputs).toHaveLength(3), { timeout: REFETCH_DEBOUNCE_MS + 1500 });
+    await act(async () => {});
+    expect(server.inputs.at(-1)).toEqual({ range: "7d", projectId: null, tz: "utc", metric: "cost" });
+    expect(slot.getByText("$88.10")).toBeTruthy();
+    expect(slot.getByText("Spent (UTC)")).toBeTruthy();
+  });
+
   it("ranks by tokens when asked, retitling the table and the chart", async () => {
     const server = backend((input) => output(input.range, { metric: input.metric ?? "cost" }));
     const slot = render(server);

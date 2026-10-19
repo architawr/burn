@@ -5,7 +5,7 @@ import {
   useRealtimeConnectionState,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
-import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type CSSProperties, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { budgetState } from "../../../src/budget.js";
 import { formatAmount, formatBudget, formatTokenCount, formatUsd, modelName } from "../../../src/format.js";
 import { cn } from "../lib/utils.js";
@@ -93,6 +93,11 @@ function useSpend(range: SpendRange, projectId: string | null, tz: SpendZone, me
       },
     );
   }, [rpc, range, projectId, tz, metric]);
+  // A debounced refetch fires after the choice it was scheduled under may have changed, so it reads the current one.
+  const current = useRef(refetch);
+  useLayoutEffect(() => {
+    current.current = refetch;
+  }, [refetch]);
 
   useEffect(() => {
     refetch();
@@ -109,9 +114,9 @@ function useSpend(range: SpendRange, projectId: string | null, tz: SpendZone, me
       if (timer.current !== null) clearTimeout(timer.current);
       timer.current = setTimeout(() => {
         timer.current = null;
-        refetch();
+        current.current();
       }, REFETCH_DEBOUNCE_MS);
-    }, [refetch]),
+    }, []),
   );
   useEffect(() => {
     if (connection === "connected" && lastConnection.current !== "connected") refetch();
