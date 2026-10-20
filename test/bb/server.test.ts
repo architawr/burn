@@ -675,6 +675,24 @@ describe("discounts", () => {
     expect(await s.rpc("overBudget", {})).toEqual({ threads: [] });
   });
 
+  it("answers the Burn page at list price when asked, leaving budgets out", async () => {
+    const s = await setup({
+      settings: { discount: 50, threadBudget: 3, dailyBudget: 3 },
+      logs: { [THREAD]: [today(user("hi")), today(assistant(4))] },
+      listed: [{ id: THREAD, providerId: "pi", updatedAt: Date.now(), deletedAt: null }],
+    });
+    s.harness.sdk.stub("projects.list", async () => []);
+    type Spend = { total: number; listPrice: boolean; dailyBudget: number | null; overBudgetCount: number; threads: { budget: number | null }[] };
+    const discounted = await s.rpc<Spend>("spend", { range: "today", projectId: null });
+    expect(discounted).toMatchObject({ listPrice: false, dailyBudget: 3 });
+    expect(discounted.total).toBeCloseTo(2);
+    expect(discounted.threads[0]?.budget).toBe(3);
+    const atList = await s.rpc<Spend>("spend", { range: "today", projectId: null, listPrice: true });
+    expect(atList).toMatchObject({ listPrice: true, dailyBudget: null, overBudgetCount: 0 });
+    expect(atList.total).toBeCloseTo(4);
+    expect(atList.threads[0]?.budget).toBeNull();
+  });
+
   it("discounts a report pi sent for a thread with no log", async () => {
     const s = await setup({ settings: { discount: 50 } });
     await s.post(envelope(1, costOf(4)));

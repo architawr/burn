@@ -144,11 +144,12 @@ function output(range: SpendRange = "7d", over: Partial<SpendOutput> = {}): Spen
     dailyBudget: 50,
     reportedThreads: 40,
     estimated: false,
+    listPrice: false,
     ...over,
   };
 }
 
-type Input = { range: SpendRange; projectId: string | null; tz?: SpendZone; metric?: SpendMetric };
+type Input = { range: SpendRange; projectId: string | null; tz?: SpendZone; metric?: SpendMetric; listPrice?: boolean };
 
 /** The spend rpc answered by `answer`, and the hidden panels kept in memory as the plugin keeps them. */
 function backend(answer: (input: Input) => SpendOutput | Promise<SpendOutput>, hidden: SpendPanel[] = []) {
@@ -238,6 +239,37 @@ describe("Spend page", () => {
   it("says when its costs include discounts", async () => {
     const slot = render(backend((input) => output(input.range)), "", { discount: 16 });
     expect((await slot.findByTestId("discounted")).textContent).toBe("Costs include the discounts in Burn's settings.");
+  });
+
+  it("shows no price switch without a discount", async () => {
+    const slot = render(backend((input) => output(input.range)));
+    await slot.findByText("$97.40");
+    expect(slot.queryByRole("group", { name: "Prices" })).toBeNull();
+  });
+
+  it("switches between discounted figures and list price, leaving budgets out at list price", async () => {
+    const server = backend((input) =>
+      input.listPrice
+        ? output(input.range, { total: 115.95, listPrice: true, dailyBudget: null, overBudgetCount: 0 })
+        : output(input.range),
+    );
+    const slot = render(server, "", { discount: 16 });
+    expect(await slot.findByText("$97.40")).toBeTruthy();
+    expect(slot.container.textContent).toContain("3 running · 2 over budget");
+    expect(server.inputs.at(-1)).not.toHaveProperty("listPrice");
+
+    const prices = within(slot.getByRole("group", { name: "Prices" }));
+    fireEvent.click(prices.getByRole("button", { name: "List price" }));
+    expect(await slot.findByText("$115.95")).toBeTruthy();
+    expect(server.inputs.at(-1)).toMatchObject({ listPrice: true });
+    expect(slot.getByTestId("discounted").textContent).toBe("List price, without your discounts. Budgets use the discounted figures.");
+    expect(slot.container.textContent).toContain("3 running · at list price");
+    expect(slot.queryByText("Daily budget $50")).toBeNull();
+
+    fireEvent.click(prices.getByRole("button", { name: "With discounts" }));
+    expect(await slot.findByText("$97.40")).toBeTruthy();
+    expect(server.inputs.at(-1)).not.toHaveProperty("listPrice");
+    expect(slot.getByTestId("discounted").textContent).toBe("Costs include the discounts in Burn's settings.");
   });
 
   it("opens a thread from its row", async () => {

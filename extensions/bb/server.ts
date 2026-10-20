@@ -267,14 +267,14 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
   }
 
   /** Reports of every thread that reported, and of every thread active since `since` that did not. */
-  async function threadReports(since: number): Promise<{ threadId: string; report: UsageReport }[]> {
+  async function threadReports(since: number, prices: "settings" | "list" = "settings"): Promise<{ threadId: string; report: UsageReport }[]> {
     const ids = new Set((await bb.storage.kv.list(REPORT_PREFIX)).map((key) => key.slice(REPORT_PREFIX.length)));
     try {
       for (const t of await listThreads()) if (t.updatedAt >= since) ids.add(t.id);
     } catch (err) {
       bb.log.warn(`listing threads failed, so only reporting threads count: ${message(err)}`);
     }
-    return reportsIn(await resolveMany([...ids]), [...ids]).map(({ id, report }) => ({ threadId: id, report }));
+    return reportsIn(await resolveMany([...ids], undefined, prices), [...ids]).map(({ id, report }) => ({ threadId: id, report }));
   }
 
   async function ownBudget(threadId: string): Promise<OwnBudget> {

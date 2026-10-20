@@ -75,7 +75,7 @@ interface SpendState {
 }
 
 /** Spend for the range, project and days, refetched (debounced) on every usage signal and after a reconnect. */
-function useSpend(range: SpendRange, projectId: string | null, tz: SpendZone, metric: SpendMetric): SpendState & { retry: () => void } {
+function useSpend(range: SpendRange, projectId: string | null, tz: SpendZone, metric: SpendMetric, listPrice: boolean): SpendState & { retry: () => void } {
   const rpc = useRpc<typeof spendMethods>();
   const connection = useRealtimeConnectionState();
   const [state, setState] = useState<SpendState>({ data: null, error: null, loading: true });
@@ -86,7 +86,7 @@ function useSpend(range: SpendRange, projectId: string | null, tz: SpendZone, me
   const refetch = useCallback(() => {
     const asked = ++latest.current;
     setState((s) => ({ ...s, loading: true }));
-    rpc.call("spend", { range, projectId, tz, metric }).then(
+    rpc.call("spend", listPrice ? { range, projectId, tz, metric, listPrice: true } : { range, projectId, tz, metric }).then(
       (data) => {
         if (asked === latest.current) setState({ data, error: null, loading: false });
       },
@@ -94,7 +94,7 @@ function useSpend(range: SpendRange, projectId: string | null, tz: SpendZone, me
         if (asked === latest.current) setState((s) => ({ ...s, error: errorText(cause), loading: false }));
       },
     );
-  }, [rpc, range, projectId, tz, metric]);
+  }, [rpc, range, projectId, tz, metric, listPrice]);
   // A debounced refetch fires after the choice it was scheduled under may have changed, so it reads the current one.
   const current = useRef(refetch);
   useLayoutEffect(() => {
@@ -159,9 +159,18 @@ function Segments<T extends string>({
   );
 }
 
+type Prices = "discounted" | "list";
+
+const PRICES: { value: Prices; label: string }[] = [
+  { value: "discounted", label: "With discounts" },
+  { value: "list", label: "List price" },
+];
+
 function Toolbar({
   metric,
   onMetric,
+  prices,
+  onPrices,
   range,
   onRange,
   zone,
@@ -173,6 +182,9 @@ function Toolbar({
 }: {
   metric: SpendMetric;
   onMetric: (metric: SpendMetric) => void;
+  /** null while no discount is set, so there is nothing to switch. */
+  prices: Prices | null;
+  onPrices: (prices: Prices) => void;
   range: SpendRange;
   onRange: (range: SpendRange) => void;
   zone: SpendZone;
@@ -186,6 +198,7 @@ function Toolbar({
     <div className="flex flex-wrap items-center gap-2">
       <span className="text-xs text-muted-foreground">Show</span>
       <Segments label="Show" items={METRICS.map((m) => ({ value: m.metric, label: m.label }))} value={metric} onChange={onMetric} />
+      {prices !== null ? <Segments label="Prices" items={PRICES} value={prices} onChange={onPrices} /> : null}
       <span className="flex-1" />
       <PanelsMenu panels={panels} />
       <select
@@ -210,7 +223,7 @@ function Toolbar({
 function Kpis({ data }: { data: SpendOutput }) {
   const threads = [
     data.runningCount > 0 ? `${data.runningCount} running` : null,
-    data.overBudgetCount > 0 ? `${data.overBudgetCount} over budget` : "none over budget",
+    data.listPrice ? "at list price" : data.overBudgetCount > 0 ? `${data.overBudgetCount} over budget` : "none over budget",
   ].filter((s): s is string => s !== null);
   return (
     <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
@@ -555,7 +568,7 @@ function Dashboard({ data, panels, discounted }: { data: SpendOutput; panels: Pa
         {data.estimated ? <p className="text-xs text-muted-foreground">~ includes estimates from list prices for harnesses that record no cost.</p> : null}
         {discounted ? (
           <p className="text-xs text-muted-foreground" data-testid="discounted">
-            Costs include the discounts in Burn's settings.
+            {data.listPrice ? "List price, without your discounts. Budgets use the discounted figures." : "Costs include the discounts in Burn's settings."}
           </p>
         ) : null}
       </div>
@@ -636,9 +649,10 @@ export function SpendPage({ subPath }: PluginNavPanelProps): ReactNode {
     setZone(next);
     saveZone(next);
   }, []);
-  const { data, error, loading, retry } = useSpend(range, projectId, zone, metric);
-  const panels = usePanels();
   const { discounted } = readPrefs(useSettings().values);
+  const [prices, setPrices] = useState<Prices>("discounted");
+  const { data, error, loading, retry } = useSpend(range, projectId, zone, metric, discounted && prices === "list");
+  const panels = usePanels();
 
   let body: ReactNode;
   if (data === null && error !== null) {
@@ -673,6 +687,8 @@ export function SpendPage({ subPath }: PluginNavPanelProps): ReactNode {
         <Toolbar
           metric={metric}
           onMetric={setMetric}
+          prices={discounted ? prices : null}
+          onPrices={setPrices}
           range={range}
           onRange={setRange}
           zone={zone}

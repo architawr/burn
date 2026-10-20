@@ -95,6 +95,8 @@ export const spendOutputSchema = z.object({
   reportedThreads: count,
   /** Some counted spend is a list-price estimate. */
   estimated: z.boolean(),
+  /** At list price, without Burn's discount settings; budgets are left out, since they apply to the discounted figures. */
+  listPrice: z.boolean(),
 });
 export type SpendOutput = z.infer<typeof spendOutputSchema>;
 
@@ -108,6 +110,8 @@ export const spendMethods = {
       projectId: z.string().max(100).nullable(),
       tz: z.enum(SPEND_ZONES).default("local"),
       metric: z.enum(SPEND_METRICS).default("cost"),
+      /** Answer at list price, without Burn's discount settings. */
+      listPrice: z.boolean().default(false),
     }),
     output: spendOutputSchema,
   },

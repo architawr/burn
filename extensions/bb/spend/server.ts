@@ -19,9 +19,9 @@ export interface SpendDeps {
   /**
    * Every thread's report that may have spend since `since`. server.ts adds
    * threads that never reported, read from their session logs; without it,
-   * only the reports stored in KV count.
+   * only the reports stored in KV count. `prices` "list" leaves out Burn's discount settings.
    */
-  reports?(since: number): Promise<Entry[]>;
+  reports?(since: number, prices?: "settings" | "list"): Promise<Entry[]>;
   now?: () => number;
 }
 
@@ -278,7 +278,7 @@ function chartOf(sums: RangeSums, dayList: readonly string[], metric: SpendMetri
 const isPanel = (v: unknown): v is SpendPanel => typeof v === "string" && (SPEND_PANELS as readonly string[]).includes(v);
 
 export function createSpendHandlers(deps: SpendDeps): {
-  spend(input: { range: SpendRange; projectId: string | null; tz?: SpendZone; metric?: SpendMetric }): Promise<SpendOutput>;
+  spend(input: { range: SpendRange; projectId: string | null; tz?: SpendZone; metric?: SpendMetric; listPrice?: boolean }): Promise<SpendOutput>;
   spendPanels(input: Record<string, never>): Promise<SpendPanels>;
   setSpendPanels(input: SpendPanels): Promise<SpendPanels>;
 } {
@@ -330,7 +330,7 @@ export function createSpendHandlers(deps: SpendDeps): {
   }
 
   return {
-    async spend({ range, projectId, tz = "local", metric = "cost" }) {
+    async spend({ range, projectId, tz = "local", metric = "cost", listPrice = false }) {
       const today = now();
       const length = RANGE_DAYS[range];
       const dayList = localDays(today, length, 0, tz);
@@ -339,11 +339,12 @@ export function createSpendHandlers(deps: SpendDeps): {
 
       // A day of slack: the range and the period before it, whatever daylight saving does.
       const since = dayDate(dayList[0] as string, tz).getTime() - (length + 1) * DAY_MS;
-      const entries = deps.reports ? await deps.reports(since) : await readReports(bb);
+      const entries = deps.reports ? await deps.reports(since, listPrice ? "list" : "settings") : await readReports(bb);
+      // Budgets apply to the discounted figures, so a list-price answer leaves them out rather than compare the two.
       const [metas, names, dailyBudget] = await Promise.all([
         threadMeta(entries.map((e) => e.threadId)),
         entries.length > 0 ? projectNames() : new Map<string, string>(),
-        deps.dailyBudget(),
+        listPrice ? null : deps.dailyBudget(),
       ]);
 
       const options = new Map<string, string>();
@@ -373,7 +374,7 @@ export function createSpendHandlers(deps: SpendDeps): {
       const sums = sumRange(counted, dayList, tz);
       const { days, models } = chartOf(sums, dayList, metric);
 
-      const budgets = await Promise.all(counted.map((row) => deps.budgetOf(row.threadId, row.report)));
+      const budgets = listPrice ? counted.map(() => null) : await Promise.all(counted.map((row) => deps.budgetOf(row.threadId, row.report)));
       const overBudgetCount = counted.filter((row, i) => budgetState(row.report.cost.total, budgets[i]) === "over").length;
 
       const byProject = new Map<string, Usage>();
@@ -469,6 +470,7 @@ export function createSpendHandlers(deps: SpendDeps): {
         dailyBudget,
         reportedThreads,
         estimated: counted.some((row) => row.report.estimated),
+        listPrice,
       };
     },
 

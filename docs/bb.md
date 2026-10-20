@@ -30,6 +30,7 @@ The **Burn** page in bb's navigation shows spend across all threads by day, proj
 The toolbar picks what the page covers:
 
 - **Range:** today, the last 7 days or the last 30 days, optionally for one project.
+- **With discounts or List price:** shown only while a discount is set. List price shows every figure without your discounts, to compare, and leaves budgets out, because they apply to the discounted figures.
 - **Local or UTC:** which calendar day counts as today. Local is the bb machine's day, and the default. UTC is the day that Shopify's AI proxy and menu bar count. The page remembers the choice.
 - **Show:** what the page measures: **Cost**, **Tokens** or **Calls**. The choice re-ranks the daily chart, the activity map, the threads, the Models table and the bars by project and by harness.
 - **Panels:** hides any panel apart from the four cost cards and the toolbar. The hide button that appears when you point at a panel does the same. Burn remembers the choice for every bb window.
@@ -58,7 +59,7 @@ Set a thread's own budget from the chip, the thread menu or the Burn tab. The **
 
 Burn's dollar figures are list prices, the published price per token. If you pay less, for example at a contract rate, set **Discount (%)** in Burn's settings. 16 means you pay 84% of list price. A negative number raises prices instead: -10 adds 10%. Four more settings each replace the discount for one line item: uncached input, output, cache reads or cache writes. Leave them empty to use **Discount (%)**.
 
-Every cost Burn shows uses your discounts: the chip, the card, the Burn tab, the Burn page and the thread menu, and also budgets, budget alerts, the daily budget, the sidebar flag and the stop at budget. The pi extension's own stop is the exception; see [prices](troubleshooting.md#prices). The card, the Burn tab and the Burn page say when their figures include discounts. The Burn tab's **With discounts · List price** switch shows the same thread at list price, to compare.
+Every cost Burn shows uses your discounts: the chip, the card, the Burn tab, the Burn page and the thread menu, and also budgets, budget alerts, the daily budget, the sidebar flag and the stop at budget. The pi extension's own stop is the exception; see [prices](troubleshooting.md#prices). The card, the Burn tab and the Burn page say when their figures include discounts. The **With discounts · List price** switch, in the Burn tab and on the Burn page, shows the same figures at list price, to compare.
 
 A thread's total, each day's total and the split by line item are exact. Figures per call, per prompt and per model hold only a total, so when the line items have different discounts, they take the thread's overall discount. With one discount for everything, every figure is exact. A cost that a harness reports as one total, with no split by line item, is shown as reported.
 
