@@ -50,6 +50,8 @@ The panels:
 
 Burn warns at 80% and at 100% of a thread's budget. It never stops a thread unless you turn on **Stop a thread at its budget**, which is off by default.
 
+An over-budget or stopped-thread notification stays on screen until you close it. The others close after 10 to 15 seconds. bb's notification center, behind the bell in the sidebar, keeps every Burn notification, so you can read one you missed.
+
 Set a thread's own budget from the chip, the thread menu or the Burn tab. The **Thread budget** setting applies to every thread without its own.
 
 ## Settings

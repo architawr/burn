@@ -11,6 +11,16 @@ import { errorText, useOnReconnect } from "./usage.js";
 const SEEN_MAX = 500;
 const REFRESH_MS = 1000;
 
+// Alerts land when a turn ends, often while the user is in another window. A budget crossed or a stopped
+// thread waits for them; sonner's default 4 seconds is too short for a title, a sentence and a button.
+const ALERT_DURATION_MS: Record<BurnAlert["kind"], number> = {
+  near: 15_000,
+  daily: 15_000,
+  expensive: 10_000,
+  over: Infinity,
+  stopped: Infinity,
+};
+
 // One overlay mounts per window, so this is "once per window".
 const seen = new Set<string>();
 
@@ -26,7 +36,7 @@ export function showAlert(alert: BurnAlert, navigate: BbNavigate): boolean {
       : alert.kind === "expensive"
         ? { label: "Open details", onClick: () => requestPanel(navigate, threadId, null) }
         : { label: "Open thread", onClick: () => navigate.toThread(threadId) };
-  const options = { id: alert.id, description: alert.body, action };
+  const options = { id: alert.id, description: alert.body, action, duration: ALERT_DURATION_MS[alert.kind], closeButton: true };
   if (alert.kind === "over" || alert.kind === "stopped") toast.error(alert.title, options);
   else if (alert.kind === "expensive") toast(alert.title, options);
   else toast.warning(alert.title, options);

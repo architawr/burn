@@ -112,4 +112,21 @@ describe("the app overlay", () => {
     daily.action.onClick();
     expect(slot.inspection.navigateCalls).toContainEqual({ method: "toPluginPanel", path: "spend" });
   });
+
+  it("keeps over-budget and stop alerts up until dismissed, and the rest long enough to read", async () => {
+    const slot = await renderOverlay(backend());
+    const kinds = ["near", "over", "stopped", "expensive", "daily"] as const;
+    for (const kind of kinds) {
+      await slot.behavior.emitRealtime("alert", { id: `${kind}:durations`, kind, threadId: kind === "daily" ? null : THREAD, title: kind, body: "b", at: 1 });
+    }
+    const calls = [...toast.mock.calls, ...toast.warning.mock.calls, ...toast.error.mock.calls] as [string, object][];
+    const shown = new Map(calls);
+    expect(Object.fromEntries(kinds.map((kind) => [kind, shown.get(kind)]))).toMatchObject({
+      near: { duration: 15_000, closeButton: true },
+      over: { duration: Infinity, closeButton: true },
+      stopped: { duration: Infinity, closeButton: true },
+      expensive: { duration: 10_000, closeButton: true },
+      daily: { duration: 15_000, closeButton: true },
+    });
+  });
 });
