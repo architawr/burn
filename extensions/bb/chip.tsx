@@ -114,12 +114,17 @@ const TONES: Record<ChipTone, { chip: string; flame: string }> = {
   waiting: { chip: "border-dashed border-border bg-transparent text-muted-foreground", flame: "text-muted-foreground" },
 };
 
-function ChipFace({ view, fresh, placement }: { view: ChipView; fresh: "in" | "out" | null; placement: "footer" | "header" }) {
+/** "compact" is the flame alone, for a phone's header, where the full chip leaves no room for the title. */
+type Placement = "footer" | "header" | "compact";
+
+function ChipFace({ view, fresh, placement }: { view: ChipView; fresh: "in" | "out" | null; placement: Placement }) {
   const tone = TONES[view.tone];
   const suffix = view.suffix;
+  const flame = view.tokenOnly ? "text-muted-foreground" : tone.flame;
+  if (placement === "compact") return <FlameIcon className={cn("size-4", flame)} />;
   return (
     <>
-      <FlameIcon className={view.tokenOnly ? "text-muted-foreground" : tone.flame} />
+      <FlameIcon className={flame} />
       <b className="font-semibold">{view.value}</b>
       {view.unit !== null ? <span className="text-muted-foreground">{view.unit}</span> : null}
       {suffix !== null ? (
@@ -147,7 +152,7 @@ function ChipFace({ view, fresh, placement }: { view: ChipView; fresh: "in" | "o
   );
 }
 
-function BurnChip({ threadId, answer, placement }: { threadId: string; answer: UsageAnswer | null; placement: "footer" | "header" }) {
+function BurnChip({ threadId, answer, placement }: { threadId: string; answer: UsageAnswer | null; placement: Placement }) {
   const prefs = readPrefs(useSettings().values);
   const navigate = useBbNavigate();
   const now = useNow(30_000);
@@ -166,9 +171,10 @@ function BurnChip({ threadId, answer, placement }: { threadId: string; answer: U
           aria-label={view.label}
           title={view.title}
           className={cn(
-            "relative inline-flex shrink-0 cursor-pointer items-center gap-1 overflow-hidden rounded-full border border-transparent pr-2 pl-1.5 text-xs whitespace-nowrap tabular-nums",
+            "relative inline-flex shrink-0 cursor-pointer items-center overflow-hidden rounded-full border border-transparent text-xs whitespace-nowrap tabular-nums",
             "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:ring-1 data-[state=open]:ring-ring",
-            placement === "footer" ? "h-5" : "h-6",
+            placement === "compact" ? "size-7 justify-center" : "gap-1 pr-2 pl-1.5",
+            placement === "footer" ? "h-5" : placement === "header" && "h-6",
             TONES[view.tone].chip,
             view.stale && "opacity-60",
           )}
@@ -196,16 +202,19 @@ function BurnChip({ threadId, answer, placement }: { threadId: string; answer: U
 
 /**
  * A thread header action, which bb always mounts, unlike a prompt-box action. It shows the chip beside
- * the context circle under the prompt box, or here in the header when that row is not on screen.
+ * the context circle under the prompt box, or here in the header when that row is not on screen. A phone
+ * shows that row only while the prompt box is expanded, and its header is too narrow for the chip, so
+ * there the header gets the flame alone. It stays mounted either way, so the chip moves to the row once it appears.
  */
-export function BurnHeaderAction({ threadId }: PluginThreadHeaderActionProps): ReactNode {
+export function BurnHeaderAction({ threadId, isCompactViewport }: PluginThreadHeaderActionProps): ReactNode {
   const prefs = readPrefs(useSettings().values);
   const navigate = useBbNavigate();
   const { answer } = useUsage(threadId);
   const [anchor, setAnchor] = useState<HTMLSpanElement | null>(null);
   const mount = useFooterMount(prefs.chip ? anchor : null);
   useEffect(() => registerPanelOpener(threadId, (params) => openPanelIn(navigate, params)), [threadId, navigate]);
-  const chip = prefs.chip ? <BurnChip threadId={threadId} answer={answer} placement={mount === null ? "header" : "footer"} /> : null;
+  const placement: Placement = mount !== null ? "footer" : isCompactViewport ? "compact" : "header";
+  const chip = prefs.chip ? <BurnChip threadId={threadId} answer={answer} placement={placement} /> : null;
   return (
     <span ref={setAnchor} className={prefs.chip && mount === null ? "inline-flex items-center" : "hidden"}>
       {chip !== null && mount !== null ? createPortal(chip, mount) : chip}

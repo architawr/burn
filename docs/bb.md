@@ -6,6 +6,8 @@ The bb plugin shows what every thread has cost, whatever harness runs it: pi, Co
 
 The chip sits beside the context circle under the prompt box. Like pi's footer, it shows the thread's own cost. While the thread works, and for a moment after its cost changes, it also shows what the last prompt added. Near or over its budget, it shows the budget instead. Click it for a card with the breakdown: where the money went, a chart of each call, the models used, and the total with the thread's child threads, such as minions. From the card you can open the Burn tab in the side panel, set a budget for the thread, or copy a summary.
 
+On a phone, bb shows the row under the prompt box only while the prompt box is expanded. Until then, a flame button in the thread header stands in for the chip and opens the same card.
+
 ![The Burn card above the chip: $4.27 for this thread, $4.40 with its child thread](../assets/screenshots/bb-chip-card.png)
 
 Amounts that Burn estimated from list prices start with `~`, for example `~$1.23`. A model without a known price shows tokens instead of dollars. See [where the numbers come from](how-it-works.md#where-the-numbers-come-from).
@@ -69,7 +71,7 @@ These are in Burn's plugin settings.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| Cost chip | on | Shows the chip beside the context circle, or in the thread header when that row is not on screen. |
+| Cost chip | on | Shows the chip beside the context circle, or in the thread header when that row is not on screen, where a phone shows the flame alone. |
 | Chip shows | Cost and last turn | Or the cost only. |
 | Thread budget | none | A budget for every thread. A thread's own budget, set from the chip or the thread menu, overrides it. |
 | Daily budget | none | One notification a day when all threads together pass it. |

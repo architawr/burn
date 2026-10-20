@@ -15,19 +15,43 @@ const slots: RenderedSlot[] = [];
 beforeEach(() => vi.clearAllMocks());
 afterEach(() => {
   for (const slot of slots.splice(0)) slot.lifecycle.unmount();
+  document.body.removeAttribute("data-split-pane-id");
+  for (const footer of document.querySelectorAll("[data-follow-up-composer-footer]")) footer.remove();
 });
 
-async function renderChip(server: ReturnType<typeof backend>, settings: Record<string, boolean | number | string> = {}) {
+async function renderChip(
+  server: ReturnType<typeof backend>,
+  settings: Record<string, boolean | number | string> = {},
+  { isCompactViewport = false }: { isCompactViewport?: boolean } = {},
+) {
   const app = await loadPluginApp(() => import("../../extensions/bb/app.js"));
   const action = app.threadHeaderActions[0];
   if (!action) throw new Error("the Burn chip is not registered");
   const slot = renderSlot<{ threadId: string; projectId: string; isCompactViewport: boolean }, typeof rpcContract>(
     action,
-    { threadId: THREAD, projectId: "proj_1", isCompactViewport: false },
+    { threadId: THREAD, projectId: "proj_1", isCompactViewport },
     { rpc: server.rpc, settings },
   );
   slots.push(slot);
   return slot;
+}
+
+/** Makes the page one bb thread pane, which every slot renders into, so the chip looks for its footer there. */
+function threadPane() {
+  document.body.setAttribute("data-split-pane-id", "p1");
+}
+
+/** bb's row under the prompt box, which a phone renders only once the prompt box expands. */
+function composerFooter(): HTMLElement {
+  const footer = document.createElement("div");
+  footer.setAttribute("data-follow-up-composer-footer", "");
+  const group = document.createElement("div");
+  const circle = document.createElement("button");
+  circle.setAttribute("aria-label", "Context window 12% used");
+  group.append(circle);
+  footer.append(document.createElement("div"), group);
+  document.body.append(footer);
+  return group;
 }
 
 const settle = async () => act(async () => {});
@@ -185,6 +209,9 @@ describe("Burn chip", () => {
     const off = await renderChip(backend(), { chip: false });
     await settle();
     expect(off.queryByRole("button")).toBeNull();
+    const phone = await renderChip(backend(), { chip: false }, { isCompactViewport: true });
+    await settle();
+    expect(phone.queryByRole("button")).toBeNull();
   });
 
   it("refetches on its own thread's signal only, and after a reconnect", async () => {
@@ -207,6 +234,79 @@ describe("Burn chip", () => {
     await slot.behavior.setRealtimeConnectionState("connected");
     expect(await slot.findByRole("button", { name: /Thread cost \$4\.82/ })).toBeTruthy();
     expect(server.callsTo("usage")).toHaveLength(3);
+  });
+});
+
+describe("where the chip shows", () => {
+  it("stays the full chip in the header off a phone when there is no footer", async () => {
+    const slot = await renderChip(backend());
+    const pill = await chipButton(slot);
+    expect(pill.dataset.placement).toBe("header");
+    expect(pill.textContent).toBe("$4.82");
+    expect(pill.className).toContain("h-6");
+    expect(slot.container.contains(pill)).toBe(true);
+  });
+
+  it("shrinks to the flame alone in a phone's header, with the same label, title and card", async () => {
+    const full = await chipButton(await renderChip(backend()));
+    const slot = await renderChip(backend(), {}, { isCompactViewport: true });
+    const icon = await chipButton(slot);
+    expect(slot.container.contains(icon)).toBe(true);
+    expect(icon.dataset.placement).toBe("compact");
+    expect(icon.textContent).toBe("");
+    expect(icon.textContent).not.toContain("$");
+    expect(icon.className).toContain("size-7");
+    expect(icon.className).toContain("rounded-full");
+    expect(icon.getAttribute("aria-label")).toBe(full.getAttribute("aria-label"));
+    expect(icon.getAttribute("title")).toBe(full.getAttribute("title"));
+    expect(icon.querySelector("[data-burn-flame]")?.getAttribute("class")).toContain("text-warning");
+
+    fireEvent.click(icon);
+    const dialog = await slot.findByRole("dialog");
+    expect(within(dialog).getByTestId("burn-card").textContent).toContain("$4.82");
+    expect(dialog.getAttribute("data-side")).toBe("bottom");
+  });
+
+  it("colours the phone's flame by the chip's tone, and mutes it for a token count", async () => {
+    const over = await renderChip(backend(() => answer({ budget: { amount: 4, source: "thread" } })), {}, { isCompactViewport: true });
+    const overIcon = await chipButton(over);
+    expect(overIcon.textContent).toBe("");
+    expect(overIcon.dataset.tone).toBe("over");
+    expect(overIcon.querySelector("[data-burn-flame]")?.getAttribute("class")).toContain("text-destructive");
+
+    const free = sampleReport({ cost: costOf(0), tokens: { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 } });
+    const tokens = await renderChip(backend(() => answer({ report: free })), {}, { isCompactViewport: true });
+    const tokenIcon = await chipButton(tokens);
+    expect(tokenIcon.textContent).toBe("");
+    expect(tokenIcon.querySelector("[data-burn-flame]")?.getAttribute("class")).toContain("text-muted-foreground");
+  });
+
+  for (const isCompactViewport of [false, true]) {
+    it(`moves the full chip into the footer when there is one${isCompactViewport ? ", on a phone too" : ""}`, async () => {
+      threadPane();
+      const group = composerFooter();
+      const slot = await renderChip(backend(), {}, { isCompactViewport });
+      const pill = await slot.findByRole("button", { name: /Thread cost/ });
+      expect(pill.dataset.placement).toBe("footer");
+      expect(pill.textContent).toBe("$4.82");
+      expect(pill.closest("[data-burn-chip]")?.parentElement).toBe(group);
+      expect(slot.container.contains(pill)).toBe(false);
+    });
+  }
+
+  it("grows from the flame into the full chip in the footer when a phone's prompt box expands", async () => {
+    threadPane();
+    const slot = await renderChip(backend(), {}, { isCompactViewport: true });
+    expect((await chipButton(slot)).textContent).toBe("");
+
+    const group = composerFooter();
+    await vi.waitFor(() => {
+      const pill = slot.getByRole("button", { name: /Thread cost/ });
+      expect(pill.dataset.placement).toBe("footer");
+      expect(pill.textContent).toBe("$4.82");
+      expect(pill.closest("[data-burn-chip]")?.parentElement).toBe(group);
+    });
+    expect(within(slot.container).queryByRole("button")).toBeNull();
   });
 });
 

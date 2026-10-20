@@ -42,7 +42,7 @@ export const SETTINGS = {
     type: "boolean",
     label: "Cost chip",
     description:
-      "Shows what the thread has cost beside the context circle under the prompt box, or in the thread header when that row is not on screen. Click it for the breakdown.",
+      "Shows what the thread has cost beside the context circle under the prompt box, or in the thread header when that row is not on screen, where a phone shows the flame alone. Click it for the breakdown.",
     default: true,
   },
   chipShows: {
