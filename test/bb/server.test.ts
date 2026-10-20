@@ -125,6 +125,11 @@ describe("settings", () => {
       "stopAtBudget",
       "flagOverBudget",
       "notifyExpensiveTurn",
+      "discount",
+      "inputDiscount",
+      "outputDiscount",
+      "cacheReadDiscount",
+      "cacheWriteDiscount",
     ]);
     expect(declared.chip).toMatchObject({ type: "boolean", label: "Cost chip", default: true });
     expect(declared.chipShows).toMatchObject({ type: "select", options: ["delta", "cost"], default: "delta" });
@@ -134,6 +139,9 @@ describe("settings", () => {
     expect(declared.budgetAlerts).toMatchObject({ default: true });
     expect(declared.flagOverBudget).toMatchObject({ default: true });
     expect(declared.notifyExpensiveTurn).toMatchObject({ default: false });
+    expect(declared.discount).toMatchObject({ type: "number", label: "Discount (%)", default: 0 });
+    expect(declared.inputDiscount).toMatchObject({ type: "number", label: "Input discount (%)" });
+    expect("default" in declared.inputDiscount).toBe(false);
   });
 
   it("never stops a thread by default, and says so", async () => {
@@ -153,6 +161,12 @@ describe("settings", () => {
     await expect(s.harness.behavior.setSettings({ threadBudget: -1 })).rejects.toThrow(/above zero/);
     await s.harness.behavior.setSettings({ threadBudget: 12.5 });
     expect((await s.usage()).policy.budget).toBe(12.5);
+  });
+
+  it("rejects a discount outside -100 to 100", async () => {
+    const s = await setup();
+    await expect(s.harness.behavior.setSettings({ discount: 101 })).rejects.toThrow(/-100 to 100/);
+    await expect(s.harness.behavior.setSettings({ cacheWriteDiscount: -101 })).rejects.toThrow(/-100 to 100/);
   });
 });
 
@@ -638,5 +652,116 @@ describe("stop at budget, for threads without the pi extension", () => {
     await s.spend(THREAD, assistant(2));
     await settle();
     expect(s.stops()).toEqual([]);
+  });
+});
+
+describe("discounts", () => {
+  const today = (entry: { timestamp: string }) => ({ ...entry, timestamp: new Date().toISOString() });
+
+  it("prices every answer with the discount, and usage at list price when asked", async () => {
+    const s = await setup({
+      settings: { discount: 50, threadBudget: 3 },
+      logs: { [THREAD]: [today(user("hi")), today(assistant(4))] },
+      listed: [{ id: THREAD, providerId: "pi", updatedAt: Date.now(), deletedAt: null }],
+    });
+    s.harness.sdk.stub("projects.list", async () => []);
+    expect((await s.usage()).report.cost.total).toBeCloseTo(2);
+    const atList = await s.rpc<Record<string, any>>("usage", { threadId: THREAD, listPrice: true });
+    expect(atList.report.cost.total).toBeCloseTo(4);
+    const { threads } = await s.rpc<{ threads: { cost: number }[] }>("costs", { threadIds: [THREAD] });
+    expect(threads[0]?.cost).toBeCloseTo(2);
+    const spend = await s.rpc<{ total: number }>("spend", { range: "today", projectId: null });
+    expect(spend.total).toBeCloseTo(2);
+    expect(await s.rpc("overBudget", {})).toEqual({ threads: [] });
+  });
+
+  it("discounts a report pi sent for a thread with no log", async () => {
+    const s = await setup({ settings: { discount: 50 } });
+    await s.post(envelope(1, costOf(4)));
+    expect((await s.usage()).report.cost.total).toBeCloseTo(2);
+  });
+
+  /** One look at THREAD: its host says its log changed, and the look is done once THREAD's usage signal goes out. */
+  async function look(s: Awaited<ReturnType<typeof setup>>, ...entries: unknown[]) {
+    const signalled = () => s.signals().filter((sig) => (sig.payload as { threadId?: string }).threadId === THREAD).length;
+    const before = signalled();
+    await s.spend(THREAD, ...entries);
+    await vi.waitFor(() => expect(signalled()).toBe(before + 1));
+  }
+
+  /** The baseline look, before which a thread from before the plugin loaded fires nothing. */
+  async function firstLook(s: Awaited<ReturnType<typeof setup>>) {
+    await s.usage();
+    await look(s);
+  }
+
+  /** A call whose cost is only these line items. */
+  const pricedCall = (cost: Partial<Record<"input" | "output" | "cacheRead" | "cacheWrite", number>>) => {
+    const call = assistant(0);
+    const parts = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, ...cost };
+    call.message.usage = { ...call.message.usage, cost: { ...parts, total: parts.input + parts.output + parts.cacheRead + parts.cacheWrite } };
+    return call;
+  };
+
+  it("alerts on spend after a discount change, and never on the change itself", async () => {
+    const s = await setup({ settings: { threadBudget: 10 }, logs: { [THREAD]: [user(), assistant(12)] } });
+    await firstLook(s);
+    await s.harness.behavior.setSettings({ discount: 50 });
+    await look(s);
+    expect(s.alerts()).toEqual([]);
+    await look(s, assistant(10));
+    await vi.waitFor(() => expect(s.alerts().map((a) => a.kind)).toEqual(["over"]));
+  });
+
+  it("stays quiet when removing a discount puts a thread near its budget", async () => {
+    const s = await setup({ settings: { threadBudget: 8, discount: 50 }, logs: { [THREAD]: [user(), assistant(7)] } });
+    await firstLook(s);
+    await s.harness.behavior.setSettings({ discount: 0 });
+    await look(s);
+    expect(s.alerts()).toEqual([]);
+  });
+
+  it("takes a falling list figure as a source catching up, even when its discounted figure rises", async () => {
+    const s = await setup({
+      settings: { threadBudget: 10, inputDiscount: 100, outputDiscount: -100 },
+      logs: { [THREAD]: [user(), pricedCall({ input: 10 })] },
+    });
+    await firstLook(s);
+    s.logs[THREAD] = [user(), pricedCall({ output: 9 })];
+    await look(s);
+    expect((await s.usage()).report.cost.total).toBeCloseTo(18);
+    expect(s.alerts()).toEqual([]);
+  });
+
+  it("refreshes every view when a discount changes, and only then", async () => {
+    const s = await setup();
+    await s.harness.behavior.setSettings({ discount: 50 });
+    expect(s.signals()).toEqual([{ channel: "usage", payload: {} }]);
+    await s.harness.behavior.setSettings({ chip: false });
+    expect(s.signals()).toHaveLength(1);
+  });
+
+  // checkDailyBudget marking the day as alerted is covered in test/bb/spend.server.test.ts.
+  it("runs the daily check once on a discount change and shows none of its alert", async () => {
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
+    const daily: BurnAlert = { id: "daily:2026-10-18", kind: "daily", threadId: null, title: "Daily budget reached", body: "…", at: 1 };
+    const check = vi.spyOn(spendServer, "checkDailyBudget").mockResolvedValue(daily);
+    const s = await setup({ settings: { dailyBudget: 50 } });
+    await s.harness.behavior.setSettings({ discount: 50 });
+    expect(check).toHaveBeenCalledTimes(1);
+    await settle();
+    expect(s.alerts()).toEqual([]);
+    await s.harness.behavior.setSettings({ chip: false });
+    await settle();
+    expect(check).toHaveBeenCalledTimes(1);
+    expect(s.signals()).toHaveLength(1);
+  });
+
+  it("keeps a line item at list price when its override is 0", async () => {
+    const s = await setup({ settings: { discount: 50, inputDiscount: 0 }, logs: { [THREAD]: [user("hi"), assistant(4)] } });
+    const { cost } = (await s.usage()).report;
+    expect(cost.input).toBeCloseTo(2);
+    expect(cost.output).toBeCloseTo(0.5);
+    expect(cost.total).toBeCloseTo(3);
   });
 });

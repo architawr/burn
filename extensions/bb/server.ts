@@ -1,6 +1,7 @@
 import type { BbPluginApi, PluginSettingDescriptors } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { budgetState, EXPENSIVE_MIN_USD, EXPENSIVE_MULTIPLE, shouldStop } from "../../src/budget.js";
+import { applyDiscounts, DISCOUNT_MAX, DISCOUNT_MIN, NO_DISCOUNTS, sameDiscounts } from "../../src/discounts.js";
 import { formatUsd, usageLabel } from "../../src/format.js";
 import { buildReport, type UsageReport } from "../../src/report.js";
 import type { UsageReply } from "../../src/wire.js";
@@ -9,6 +10,7 @@ import { effectiveBudget, type OwnBudget, policyFor, positiveOrNull } from "./bu
 import { BUDGET_MAX, type CostRow, type Family, rpcContract } from "./contract.js";
 import { budgetKey, logKey, REPORT_PREFIX, reportKey, stoppedKey } from "./keys.js";
 import { alertEvents, alertFor } from "./notify.js";
+import { discountsOf } from "./prefs.js";
 import { type Stored, storedSchema, usageEnvelopeSchema } from "./schema.js";
 import { createReportSource } from "./sources.js";
 import { checkDailyBudget, createSpendHandlers, type SpendDeps } from "./spend/server.js";
@@ -31,6 +33,9 @@ const budgetSetting = z
   .number()
   .positive("Enter an amount above zero, or leave it empty for no budget.")
   .max(BUDGET_MAX, "Enter an amount up to $1,000,000.");
+
+const PERCENT = "Enter a percentage from -100 to 100, or 0 for list price.";
+const discountSetting = z.number().min(DISCOUNT_MIN, PERCENT).max(DISCOUNT_MAX, PERCENT);
 
 export const SETTINGS = {
   chip: {
@@ -85,6 +90,38 @@ export const SETTINGS = {
     label: "Notify after an unusually expensive turn",
     description: `Off by default. When on, Burn notifies you after a prompt that costs at least ${EXPENSIVE_MULTIPLE} times the thread's median turn and at least ${formatUsd(EXPENSIVE_MIN_USD)}.`,
     default: false,
+  },
+  discount: {
+    type: "number",
+    label: "Discount (%)",
+    description:
+      "Percent off list price for every cost Burn shows, budgets included. 16 means you pay 84% of list price. 0 means list price; a negative number, such as -10, adds 10%.",
+    default: 0,
+    experimental_schema: discountSetting,
+  },
+  inputDiscount: {
+    type: "number",
+    label: "Input discount (%)",
+    description: "Replaces the discount above for uncached input tokens. Empty means the discount above.",
+    experimental_schema: discountSetting,
+  },
+  outputDiscount: {
+    type: "number",
+    label: "Output discount (%)",
+    description: "Replaces the discount above for output tokens, reasoning included. Empty means the discount above.",
+    experimental_schema: discountSetting,
+  },
+  cacheReadDiscount: {
+    type: "number",
+    label: "Cache read discount (%)",
+    description: "Replaces the discount above for cache reads. Empty means the discount above.",
+    experimental_schema: discountSetting,
+  },
+  cacheWriteDiscount: {
+    type: "number",
+    label: "Cache write discount (%)",
+    description: "Replaces the discount above for cache writes. Empty means the discount above.",
+    experimental_schema: discountSetting,
   },
 } satisfies PluginSettingDescriptors;
 
@@ -172,9 +209,10 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
    * what a log cannot know: pi's own budget, when pi stopped a run, and the
    * context window. Whether it is working comes from bb.
    */
-  async function resolveMany(threadIds: readonly string[], pinned?: Pinned): Promise<Map<string, Resolved>> {
+  async function resolveMany(threadIds: readonly string[], pinned?: Pinned, prices: "settings" | "list" = "settings"): Promise<Map<string, Resolved>> {
     const ids = [...new Set(threadIds)];
-    const logs = await source.reportsOf(ids);
+    const [logs, values] = await Promise.all([source.reportsOf(ids), settings.get()]);
+    const discounts = prices === "list" ? NO_DISCOUNTS : discountsOf(values);
     const out = new Map<string, Resolved>();
     await Promise.all(
       ids.map(async (threadId) => {
@@ -188,13 +226,16 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
         if (!base) return;
         const pi = stored?.report ?? null;
         const piStopped = pi?.stoppedAt ?? null;
-        const report: UsageReport = {
-          ...base,
-          budget: pi?.budget ?? null,
-          stoppedAt: piStopped === null || stopped === null ? (piStopped ?? stopped) : Math.max(piStopped, stopped),
-          context: pi?.context ?? base.context,
-          running,
-        };
+        const report = applyDiscounts(
+          {
+            ...base,
+            budget: pi?.budget ?? null,
+            stoppedAt: piStopped === null || stopped === null ? (piStopped ?? stopped) : Math.max(piStopped, stopped),
+            context: pi?.context ?? base.context,
+            running,
+          },
+          discounts,
+        );
         const fromPi = stored !== null && Date.now() - stored.at < PI_FRESH_MS;
         out.set(threadId, { report, source: fromPi ? "pi" : (log?.source ?? "log"), at: Math.max(log?.at ?? 0, stored?.at ?? 0) });
       }),
@@ -369,14 +410,18 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
   }
 
   async function look(threadIds: readonly string[], pinned?: Pinned): Promise<void> {
-    const [resolved, values] = await Promise.all([resolveMany(threadIds, pinned), settings.get()]);
+    // observed keeps list prices, so both figures get the same discounts and a changed setting is never spend.
+    const [resolved, values] = await Promise.all([resolveMany(threadIds, pinned, "list"), settings.get()]);
+    const discounts = discountsOf(values);
     for (const threadId of threadIds) {
-      const next = resolved.get(threadId)?.report;
-      if (!next) continue;
-      const prev = observed.get(threadId) ?? (next.startedAt >= loadedAt ? EMPTY : null);
-      // A lower figure is a source catching up, not spend; keeping the higher one crosses no threshold twice.
-      if (prev !== null && next.cost.total < prev.cost.total) continue;
-      remember(observed, threadId, next);
+      const atList = resolved.get(threadId)?.report;
+      if (!atList) continue;
+      const seen = observed.get(threadId) ?? (atList.startedAt >= loadedAt ? EMPTY : null);
+      const next = applyDiscounts(atList, discounts);
+      const prev = seen === null ? null : applyDiscounts(seen, discounts);
+      // A lower figure, at list price or discounted, is a source catching up, not spend; keeping the higher one crosses no threshold twice.
+      if (seen !== null && prev !== null && (atList.cost.total < seen.cost.total || next.cost.total < prev.cost.total)) continue;
+      remember(observed, threadId, atList);
       if (prev === null) continue;
       await stopAtBudget(threadId, prev, next, values);
       await announce(threadId, prev, next, values);
@@ -398,6 +443,13 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
     return run;
   }
 
+  settings.onChange((next, prev) => {
+    if (disposed || sameDiscounts(discountsOf(next), discountsOf(prev))) return;
+    bb.realtime.publish("usage", {});
+    // Repriced spend is not new spend: a day it already puts over the daily budget is marked as alerted, silently.
+    checkDailyBudget(spendDeps).catch((err: unknown) => bb.log.warn(`checking the daily budget after a discount change failed: ${message(err)}`));
+  });
+
   /** The source's news: a host saw these threads' logs change, or bb says they started or stopped working. */
   function changed(threadIds: string[]): void {
     observe(threadIds)
@@ -410,9 +462,9 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
   }
 
   bb.rpc.register(rpcContract, {
-    usage: async ({ threadId }) => {
+    usage: async ({ threadId, listPrice }) => {
       const descendants = (await descendantsOf([threadId])).get(threadId) ?? [];
-      const resolved = await resolveMany([threadId, ...descendants]);
+      const resolved = await resolveMany([threadId, ...descendants], undefined, listPrice ? "list" : "settings");
       const own = resolved.get(threadId) ?? null;
       const report = own?.report ?? null;
       const [budget, policy, title, family] = await Promise.all([

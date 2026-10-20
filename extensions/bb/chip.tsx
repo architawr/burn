@@ -71,7 +71,7 @@ export function chipView(answer: UsageAnswer | null, opts: { now: number; fresh:
   else if (opts.chipShows === "delta" && !tokenOnly && (running || opts.fresh)) suffix = { kind: "delta", text: formatDelta(report.lastTurnCost) };
   const total = `${value}${tokenOnly ? " tok" : ""}`;
   const budgetNote = budget !== null && !tokenOnly ? ` of ${formatBudget(budget)}` : "";
-  const estimate = report.estimated ? " Estimated at list price." : "";
+  const estimate = report.estimated ? " Estimated from list prices." : "";
   return {
     tone,
     value,
@@ -181,6 +181,7 @@ function BurnChip({ threadId, answer, placement }: { threadId: string; answer: U
           answer={answer}
           threadId={threadId}
           defaultBudget={prefs.threadBudget}
+          discounted={prefs.discounted}
           now={now}
           onOpenDetails={() => {
             setOpen(false);

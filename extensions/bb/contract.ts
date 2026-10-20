@@ -57,7 +57,14 @@ const costRow = z.object({
 });
 
 export const rpcContract = defineRpcContract({
-  usage: { input: z.object({ threadId }), output: usageOutput },
+  usage: {
+    input: z.object({
+      threadId,
+      /** Answer at list price, without Burn's discount settings. */
+      listPrice: z.boolean().default(false),
+    }),
+    output: usageOutput,
+  },
   setBudget: {
     input: z.object({
       threadId,

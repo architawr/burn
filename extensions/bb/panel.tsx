@@ -39,19 +39,16 @@ function Kpi({ label, value, sub }: { label: string; value: string; sub: string 
   );
 }
 
-function Kpis({ answer, report }: { answer: UsageAnswer; report: UsageReport }): ReactNode {
+function Kpis({ answer, report, atList }: { answer: UsageAnswer; report: UsageReport; atList: boolean }): ReactNode {
   const tokenOnly = isTokenOnly(report);
   const own = report.cost.total;
   const { family, budget } = answer;
   const kids = family.children.length;
   const fromKids = family.total - own;
+  const share = budget !== null && !tokenOnly ? `${Math.round((own / budget.amount) * 100)}% of ${formatBudget(budget.amount)} budget` : "No budget";
   return (
     <div className="grid grid-cols-[repeat(auto-fit,minmax(8.5rem,1fr))] gap-2" data-testid="kpis">
-      <Kpi
-        label="This thread"
-        value={usageLabel(report)}
-        sub={budget !== null && !tokenOnly ? `${Math.round((own / budget.amount) * 100)}% of ${formatBudget(budget.amount)} budget` : "No budget"}
-      />
+      <Kpi label="This thread" value={usageLabel(report)} sub={atList ? "At list price" : share} />
       {kids > 0 ? (
         <Kpi
           label={`With ${kids} ${kids === 1 ? "child" : "children"}`}
@@ -195,6 +192,31 @@ function Turns({ report }: { report: UsageReport }): ReactNode {
   );
 }
 
+/** Discounted figures or list price, shown only while some discount is set. */
+function PriceSwitch({ atList, onChange }: { atList: boolean; onChange: (atList: boolean) => void }): ReactNode {
+  const segment = (value: boolean, label: string) => (
+    <button
+      type="button"
+      aria-pressed={atList === value}
+      onClick={() => onChange(value)}
+      className={cn("rounded-[5px] px-2 py-0.5", atList === value ? "bg-state-hover text-foreground" : "text-muted-foreground")}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="inline-flex self-start rounded-md bg-surface-recessed p-0.5 text-[11.5px]" role="group" aria-label="Prices">
+        {segment(false, "With discounts")}
+        {segment(true, "List price")}
+      </span>
+      <p className="text-[11px] text-muted-foreground" data-testid="price-note">
+        {atList ? "List price, without your discounts. Budgets use the discounted figures." : "After the discounts in Burn's settings."}
+      </p>
+    </div>
+  );
+}
+
 function Dot({ running }: { running: boolean }): ReactNode {
   return running ? (
     <i aria-label="running" data-burn-running-dot="" className="ml-1 size-2 rounded-full bg-timeline-accent text-timeline-accent" />
@@ -260,22 +282,35 @@ function FamilyList({ answer, report, onOpen }: { answer: UsageAnswer; report: U
 export function BurnPanel({ threadId, params }: PluginThreadPanelProps): ReactNode {
   const prefs = readPrefs(useSettings().values);
   const navigate = useBbNavigate();
-  const { answer, error } = useUsage(threadId, { withChildren: true });
+  const [listPrice, setListPrice] = useState(false);
+  const atList = prefs.discounted && listPrice;
+  const { answer, error } = useUsage(threadId, { withChildren: true, listPrice: atList });
   const report = answer?.report ?? null;
   const budget = answer?.budget ?? null;
+  const prices = prefs.discounted ? <PriceSwitch atList={atList} onChange={setListPrice} /> : null;
   if (answer === null) {
-    return <p className="text-xs text-muted-foreground">{error !== null ? `Loading Burn's figures failed: ${error}` : "Loading…"}</p>;
+    const loading = <p className="text-xs text-muted-foreground">{error !== null ? `Loading Burn's figures failed: ${error}` : "Loading…"}</p>;
+    // The switch stays while its answer loads, so the segment just pressed keeps focus.
+    return prices === null ? (
+      loading
+    ) : (
+      <div className="flex flex-col gap-4 text-xs">
+        {prices}
+        {loading}
+      </div>
+    );
   }
   return (
     <div className="flex flex-col gap-4 text-xs" data-testid="burn-panel">
-      {report === null ? <WaitingNotice /> : <Kpis answer={answer} report={report} />}
+      {prices}
+      {report === null ? <WaitingNotice /> : <Kpis answer={answer} report={report} atList={atList} />}
       {report?.estimated ? <EstimatedNote /> : null}
       {report?.stoppedAt != null ? <StoppedNotice stoppedAt={report.stoppedAt} budget={budget} /> : null}
       {report !== null ? <Turns report={report} /> : null}
       {report !== null ? <FamilyList answer={answer} report={report} onOpen={(id) => navigate.toThread(id)} /> : null}
       <section data-testid="panel-budget">
         <Label>Budget</Label>
-        {report !== null && !isTokenOnly(report) ? <BudgetStatus cost={report.cost.total} budget={budget} /> : null}
+        {report !== null && !isTokenOnly(report) && !atList ? <BudgetStatus cost={report.cost.total} budget={budget} /> : null}
         <div className="mt-2">
           <BudgetEditor
             key={`${budget?.source ?? "none"}:${budget?.amount ?? ""}`}

@@ -20,7 +20,7 @@ The same repository ships a pi extension, installed separately with `pi install 
 ## Requirements and limits
 
 - bb 0.46 or newer. No account and no outside service: Burn reads only what bb and pi already record.
-- Dollar figures are list prices. They do not include discounts or what a proxy bills.
+- Dollar figures are list prices unless you set a discount in Burn's settings, such as a contract rate.
 - Claude Code threads update once per turn, do not count Claude Code's subagents, and are never stopped at their budget, though budget alerts still fire.
 - Call times and failed calls are recorded only for pi threads.
 - A harness that sends bb no usage shows nothing.

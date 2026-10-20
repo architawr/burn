@@ -173,8 +173,8 @@ function backend(answer: (input: Input) => SpendOutput | Promise<SpendOutput>, h
   };
 }
 
-function render(server: ReturnType<typeof backend>, subPath = "") {
-  const slot = renderSlot<{ subPath: string }, typeof spendMethods>({ component: SpendPage }, { subPath }, { rpc: server.rpc });
+function render(server: ReturnType<typeof backend>, subPath = "", settings: Record<string, number> = {}) {
+  const slot = renderSlot<{ subPath: string }, typeof spendMethods>({ component: SpendPage }, { subPath }, { rpc: server.rpc, settings });
   slots.push(slot);
   return slot;
 }
@@ -220,18 +220,24 @@ describe("Spend page", () => {
     expect(within(slot.getByRole("region", { name: "By project" })).getByText("bb-marketplace")).toBeTruthy();
     expect(within(slot.getByRole("region", { name: "By harness" })).getByText("~$12.30")).toBeTruthy();
     expect(slot.queryByRole("region", { name: "By model" })).toBeNull();
-    expect(slot.queryByText(/list-price estimates/)).toBeNull();
+    expect(slot.queryByText(/estimates from list prices/)).toBeNull();
+    expect(slot.queryByTestId("discounted")).toBeNull();
   });
 
   it("marks list-price estimates in the Spent figure and the thread rows, and says so", async () => {
     const base = output("7d");
     const slot = render(backend(() => ({ ...base, estimated: true, threads: base.threads.map((t, i) => ({ ...t, estimated: i === 0 })) })));
     expect(await slot.findByText("~$97.40")).toBeTruthy();
-    expect(slot.getByText("~ includes list-price estimates for harnesses that record no cost.")).toBeTruthy();
+    expect(slot.getByText("~ includes estimates from list prices for harnesses that record no cost.")).toBeTruthy();
     const rows = slot.getAllByTestId("spend-thread");
     expect(rows[0]?.textContent).toContain("~$14.20");
     expect(rows[0]?.textContent).toContain("~$22.75");
     expect(rows[1]?.textContent).not.toContain("~");
+  });
+
+  it("says when its costs include discounts", async () => {
+    const slot = render(backend((input) => output(input.range)), "", { discount: 16 });
+    expect((await slot.findByTestId("discounted")).textContent).toBe("Costs include the discounts in Burn's settings.");
   });
 
   it("opens a thread from its row", async () => {

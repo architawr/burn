@@ -106,9 +106,9 @@ describe("chipView", () => {
   it("marks a list-price estimate with a tilde and says so", () => {
     const guess = answer({ report: sampleReport({ estimated: true }) });
     expect(view(guess)).toMatchObject({ value: "~$4.82" });
-    expect(view(guess).title).toBe("Thread cost ~$4.82. Click for the breakdown. Estimated at list price.");
+    expect(view(guess).title).toBe("Thread cost ~$4.82. Click for the breakdown. Estimated from list prices.");
     const stale = view(answer({ report: sampleReport({ estimated: true, running: true }), reportedAt: now - STALE_MS - 60_000 }));
-    expect(stale.title).toMatch(/while the thread was working\. Estimated at list price\.$/);
+    expect(stale.title).toMatch(/while the thread was working\. Estimated from list prices\.$/);
     expect(view(answer()).title).not.toContain("Estimated");
   });
 
@@ -255,7 +255,19 @@ describe("the chip's popover", () => {
     const card = await openCard(slot);
     expect(card.getByTestId("burn-card").textContent).toContain("~$4.82");
     expect(card.getByTestId("with-children").textContent).toBe("~$49.97 with 2 child threads");
-    expect(card.getByTestId("estimated").textContent).toBe("~ Estimated at list price: this harness records no cost.");
+    expect(card.getByTestId("estimated").textContent).toBe("~ Estimated from list prices: this harness records no cost.");
+  });
+
+  it("says when its figures include discounts", async () => {
+    const slot = await renderChip(backend(), { discount: 16 });
+    const card = await openCard(slot);
+    expect(card.getByTestId("discounted").textContent).toBe("After the discounts in Burn's settings.");
+  });
+
+  it("says nothing of discounts when none is set", async () => {
+    const slot = await renderChip(backend());
+    const card = await openCard(slot);
+    expect(card.queryByTestId("discounted")).toBeNull();
   });
 
   it("refetches only on signals, never on a timer, even for figures from a session log", async () => {

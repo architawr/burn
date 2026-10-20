@@ -4,11 +4,13 @@ import {
   useRealtime,
   useRealtimeConnectionState,
   useRpc,
+  useSettings,
 } from "@get-bb/plugin-sdk/app";
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { budgetState } from "../../../src/budget.js";
 import { formatAmount, formatBudget, formatTokenCount, formatUsd, modelName } from "../../../src/format.js";
 import { cn } from "../lib/utils.js";
+import { readPrefs } from "../prefs.js";
 import type { SpendMetric, SpendOutput, SpendPanel, SpendRange, SpendZone, spendMethods } from "./contract.js";
 import { dayDate, RANGE_DAYS } from "./days.js";
 import { HideButton, PANELS, PanelLabel, type Panels, PanelsMenu, usePanels } from "./panels.js";
@@ -538,7 +540,7 @@ function Pair({ left, right }: { left: ReactNode; right: ReactNode }) {
 
 const CARD = "min-w-0 rounded-lg border border-border p-3";
 
-function Dashboard({ data, panels }: { data: SpendOutput; panels: Panels }) {
+function Dashboard({ data, panels, discounted }: { data: SpendOutput; panels: Panels; discounted: boolean }) {
   const { metric } = data;
   const shown = (id: SpendPanel, panel: () => ReactNode, className?: string): ReactNode =>
     panels.shown(id) ? <div className={cn("group min-w-0", className)}>{panel()}</div> : null;
@@ -550,7 +552,12 @@ function Dashboard({ data, panels }: { data: SpendOutput; panels: Panels }) {
       <div className="space-y-2.5">
         <Kpis data={data} />
         {shown("usage", () => <UsageCards data={data} />)}
-        {data.estimated ? <p className="text-xs text-muted-foreground">~ includes list-price estimates for harnesses that record no cost.</p> : null}
+        {data.estimated ? <p className="text-xs text-muted-foreground">~ includes estimates from list prices for harnesses that record no cost.</p> : null}
+        {discounted ? (
+          <p className="text-xs text-muted-foreground" data-testid="discounted">
+            Costs include the discounts in Burn's settings.
+          </p>
+        ) : null}
       </div>
       {shown("chart", () => (
         <section aria-label={title}>
@@ -631,6 +638,7 @@ export function SpendPage({ subPath }: PluginNavPanelProps): ReactNode {
   }, []);
   const { data, error, loading, retry } = useSpend(range, projectId, zone, metric);
   const panels = usePanels();
+  const { discounted } = readPrefs(useSettings().values);
 
   let body: ReactNode;
   if (data === null && error !== null) {
@@ -654,7 +662,7 @@ export function SpendPage({ subPath }: PluginNavPanelProps): ReactNode {
             Could not refresh: {error}
           </div>
         ) : null}
-        <Dashboard data={data} panels={panels} />
+        <Dashboard data={data} panels={panels} discounted={discounted} />
       </>
     );
   }

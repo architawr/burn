@@ -24,7 +24,9 @@ After a machine's bb daemon restarts, live updates for its threads resume within
 
 ### Prices
 
-Dollar figures are list prices: either the ones pi recorded, or Burn's estimates (`~$`). Neither knows about discounts or what a proxy actually bills. Estimates also price every cache write as a five-minute write, because bb's usage events do not say which writes were one-hour writes.
+Dollar figures are list prices unless you set a **Discount (%)** in Burn's settings; see [Discounts](bb.md#discounts). They are either the costs pi recorded or Burn's estimates (`~$`), and estimates are discounted too. Burn cannot see what a proxy actually bills, so set the discounts to match its rates. Estimates also price every cache write as a five-minute write, because bb's usage events do not say which writes were one-hour writes.
+
+The pi extension does not use Burn's discounts, so pi's pill and `/burn` show list price. With the pi extension installed and **Stop a thread at its budget** on, the extension stops a run when its list-price cost reaches the budget. With a discount set, that is earlier than the chip shows.
 
 Router aliases such as `shopify/auto-best` have no known price, so their threads show tokens. A cost in a currency other than US dollars is not converted, so that thread shows tokens too.
 

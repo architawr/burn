@@ -17,7 +17,7 @@ Elsewhere in bb:
 
 ## The Burn tab
 
-The Burn tab in the thread's side panel lists every prompt with its cost, and adds the cost of the thread's child threads. It also holds the thread's budget.
+The Burn tab in the thread's side panel lists every prompt with its cost, and adds the cost of the thread's child threads. It also holds the thread's budget. With a discount set, a **With discounts · List price** switch at the top shows the same thread at list price, to compare.
 
 ![The Burn tab: totals, every prompt's cost, and the thread with its child](../assets/screenshots/bb-panel.png)
 
@@ -54,6 +54,14 @@ An over-budget or stopped-thread notification stays on screen until you close it
 
 Set a thread's own budget from the chip, the thread menu or the Burn tab. The **Thread budget** setting applies to every thread without its own.
 
+## Discounts
+
+Burn's dollar figures are list prices, the published price per token. If you pay less, for example at a contract rate, set **Discount (%)** in Burn's settings. 16 means you pay 84% of list price. A negative number raises prices instead: -10 adds 10%. Four more settings each replace the discount for one line item: uncached input, output, cache reads or cache writes. Leave them empty to use **Discount (%)**.
+
+Every cost Burn shows uses your discounts: the chip, the card, the Burn tab, the Burn page and the thread menu, and also budgets, budget alerts, the daily budget, the sidebar flag and the stop at budget. The pi extension's own stop is the exception; see [prices](troubleshooting.md#prices). The card, the Burn tab and the Burn page say when their figures include discounts. The Burn tab's **With discounts · List price** switch shows the same thread at list price, to compare.
+
+A thread's total, each day's total and the split by line item are exact. Figures per call, per prompt and per model hold only a total, so when the line items have different discounts, they take the thread's overall discount. With one discount for everything, every figure is exact. A cost that a harness reports as one total, with no split by line item, is shown as reported.
+
 ## Settings
 
 These are in Burn's plugin settings.
@@ -68,3 +76,8 @@ These are in Burn's plugin settings.
 | Stop a thread at its budget | off | Stops the run whose cost crosses the budget. In a pi thread with the pi extension, the extension stops the run itself; otherwise Burn stops the thread's current work through bb. Claude Code threads are not stopped, because their cost arrives only as each turn ends. Sending another prompt continues. |
 | Flag threads over budget | on | The red flame in the sidebar. |
 | Notify after an expensive prompt | off | A notification after a prompt that costs at least 3 times the thread's median and at least $0.50. |
+| Discount (%) | 0 | Percent off list price for every cost Burn shows, budgets included. 16 means you pay 84% of list price, and a negative number raises prices. 0 is list price. See [Discounts](#discounts). |
+| Input discount (%) | empty | Replaces **Discount (%)** for uncached input tokens. |
+| Output discount (%) | empty | Replaces **Discount (%)** for output tokens, reasoning included. |
+| Cache read discount (%) | empty | Replaces **Discount (%)** for cache reads. |
+| Cache write discount (%) | empty | Replaces **Discount (%)** for cache writes. |

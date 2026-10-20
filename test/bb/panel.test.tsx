@@ -52,7 +52,7 @@ describe("the Burn panel", () => {
     const slot = await renderPanel(backend(() => answer({ report: sampleReport({ estimated: true }), family })));
     const kpis = slot.getByTestId("kpis").textContent ?? "";
     for (const part of ["This thread~$4.82", "With 2 children~$6.64", "Per call~$0.21"]) expect(kpis).toContain(part);
-    expect(slot.getByTestId("estimated").textContent).toBe("~ Estimated at list price: this harness records no cost.");
+    expect(slot.getByTestId("estimated").textContent).toBe("~ Estimated from list prices: this harness records no cost.");
     const rows = slot.getByTestId("family").textContent ?? "";
     expect(rows).toContain("14 calls~$1.10");
     expect(rows).toContain("9 calls$0.72");
@@ -114,6 +114,40 @@ describe("the Burn panel", () => {
     expect(slot.getByTestId("waiting").textContent).not.toContain("Only pi threads");
     expect(slot.getByRole("textbox", { name: "Budget in dollars" })).toBeTruthy();
     expect(slot.queryByTestId("turns")).toBeNull();
+  });
+
+  it("shows no price switch without a discount", async () => {
+    const slot = await renderPanel(backend());
+    expect(slot.queryByRole("group", { name: "Prices" })).toBeNull();
+    expect(slot.queryByTestId("price-note")).toBeNull();
+  });
+
+  it("switches between discounted figures and list price, with no budget share at list price", async () => {
+    const budget = { amount: 10, source: "setting" as const };
+    const atList = sampleReport({ cost: { ...sampleReport().cost, total: 5.74 } });
+    const server = backend(undefined, { usage: ({ listPrice }) => answer({ budget, report: listPrice ? atList : sampleReport() }) });
+    const slot = await renderPanel(server, null, { discount: 16 });
+    const prices = () => within(slot.getByRole("group", { name: "Prices" }));
+    const note = () => slot.getByTestId("price-note").textContent;
+    expect(note()).toBe("After the discounts in Burn's settings.");
+    expect(slot.getByTestId("kpis").textContent).toContain("This thread$4.82");
+    expect(slot.getByTestId("kpis").textContent).toContain("48% of $10 budget");
+    expect(server.callsTo("usage").map((c) => c.input)).toEqual([{ threadId: THREAD }]);
+
+    const pressed = prices().getByRole("button", { name: "List price" });
+    fireEvent.click(pressed);
+    await vi.waitFor(() => expect(server.callsTo("usage").at(-1)?.input).toEqual({ threadId: THREAD, listPrice: true }));
+    expect(note()).toBe("List price, without your discounts. Budgets use the discounted figures.");
+    await vi.waitFor(() => expect(slot.getByTestId("kpis").textContent).toContain("This thread$5.74At list price"));
+    // The switch stays mounted while the list-price answer loads.
+    expect(pressed.isConnected).toBe(true);
+    expect(slot.container.textContent).not.toMatch(/% of/);
+
+    fireEvent.click(prices().getByRole("button", { name: "With discounts" }));
+    await vi.waitFor(() => expect(server.callsTo("usage").at(-1)?.input).toEqual({ threadId: THREAD }));
+    expect(note()).toBe("After the discounts in Burn's settings.");
+    await vi.waitFor(() => expect(slot.getByTestId("kpis").textContent).toContain("This thread$4.82"));
+    expect(slot.getByTestId("kpis").textContent).toContain("48% of $10 budget");
   });
 
   it("notes a run Burn stopped", async () => {

@@ -45,7 +45,15 @@ export function WaitingNotice(): ReactNode {
 export function EstimatedNote(): ReactNode {
   return (
     <p className="text-[11px] text-muted-foreground" data-testid="estimated">
-      ~ Estimated at list price: this harness records no cost.
+      ~ Estimated from list prices: this harness records no cost.
+    </p>
+  );
+}
+
+export function DiscountNote(): ReactNode {
+  return (
+    <p className="text-[11px] text-muted-foreground" data-testid="discounted">
+      After the discounts in Burn's settings.
     </p>
   );
 }
@@ -209,13 +217,15 @@ export interface BurnCardProps {
   answer: UsageAnswer | null;
   threadId: string;
   defaultBudget: number | null;
+  /** Some discount in Burn's settings is not 0. */
+  discounted: boolean;
   now: number;
   onOpenDetails: () => void;
   onCopy: () => Promise<boolean>;
 }
 
 /** The chip's popover: what the thread cost, against its budget, where it went and on which models. */
-export function BurnCard({ answer, threadId, defaultBudget, now, onOpenDetails, onCopy }: BurnCardProps): ReactNode {
+export function BurnCard({ answer, threadId, defaultBudget, discounted, now, onOpenDetails, onCopy }: BurnCardProps): ReactNode {
   const [editing, setEditing] = useState(false);
   const [copied, copy] = useCopied();
   const report = answer?.report ?? null;
@@ -254,6 +264,7 @@ export function BurnCard({ answer, threadId, defaultBudget, now, onOpenDetails, 
             </div>
             <div className="mt-1 text-muted-foreground tabular-nums">{meta(report)}</div>
             {report.estimated ? <EstimatedNote /> : null}
+            {discounted && !isTokenOnly(report) ? <DiscountNote /> : null}
             {withChildren !== null ? (
               <div className="text-muted-foreground tabular-nums" data-testid="with-children">
                 {withChildren}

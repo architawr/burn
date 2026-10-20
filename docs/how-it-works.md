@@ -11,6 +11,8 @@ In bb, Burn counts every thread, whatever harness runs it.
 
 When a harness passes bb its own cost, Burn uses that cost as it is. Codex and Claude Code pass bb their tokens but no cost. Burn prices their tokens with pi's list prices for OpenAI Codex and Anthropic models, and marks every such amount as an estimate, for example `~$1.23`. A model without a known price shows tokens instead of dollars.
 
+Burn reads and keeps list prices, and applies the discounts in its settings each time it answers. So a changed discount applies at once, to past figures as well, with nothing to rebuild. See [Discounts](bb.md#discounts).
+
 ## Reading pi's session logs
 
 The bb plugin has a host entry: code that bb runs on every connected machine. It reads the session log that bb's pi bridge keeps for each pi thread on that machine, and builds the same report pi would.
