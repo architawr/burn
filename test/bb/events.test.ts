@@ -16,7 +16,7 @@ function setup() {
   let failing = false;
   let now = 1_000_000;
   const { bb, harness } = createFakePluginHost({
-    pluginId: "pi-burn",
+    pluginId: "burn",
     sdk: {
       threads: {
         events: {

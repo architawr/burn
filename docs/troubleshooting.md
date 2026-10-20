@@ -4,7 +4,7 @@
 
 - **The chip shows a dashed "—" in bb.** The thread has made no model call yet, or its harness sends bb no usage. For a pi thread it can also mean that Burn found no session log on the thread's machine and no report from pi. Check that bb keeps its pi sessions in the default folder; see [session logs](#session-logs) below.
 - **The chip is dimmed with an age such as "3h".** bb says a pi thread is working, but its session log has not changed since then, so pi may have stopped. Threads of other harnesses are never dimmed, because a Claude Code turn can run for minutes before bb records its usage.
-- **There is no chip in bb.** Check that the **Cost chip** setting in Burn's plugin settings is on. `bb plugin list` should show `pi-burn` as running.
+- **There is no chip in bb.** Check that the **Cost chip** setting in Burn's plugin settings is on. `bb plugin list` should show `burn` as running.
 - **The chip is in the thread header, not the footer.** Burn did not find bb's footer markup; see [bb's page markup](#bbs-page-markup) below. The chip works the same there.
 - **There is no pill in pi.** The pill shows only in pi's terminal UI. `/burn` works in any mode.
 

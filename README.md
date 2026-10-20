@@ -1,4 +1,4 @@
-# pi-burn
+# Burn
 
 See what each agent thread has cost, while it runs.
 
@@ -58,7 +58,7 @@ bb plugin install path:"$PWD"
 pi install "$PWD"
 ```
 
-To update, run `bb plugin update pi-burn` and `pi update git:github.com/kalindudc/burn`. A bare `pi update` updates pi itself, not its packages.
+To update, run `bb plugin update burn` and `pi update git:github.com/kalindudc/burn`. A bare `pi update` updates pi itself, not its packages.
 
 Requirements: bb 0.46 or newer. The pi extension needs pi 1.x, which provides `ctx.mode`.
 

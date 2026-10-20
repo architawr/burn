@@ -63,7 +63,7 @@ async function setup(opts: {
 }) {
   const { threads } = opts;
   const { bb, harness } = createFakePluginHost({
-    pluginId: "pi-burn",
+    pluginId: "burn",
     sdk: {
       threads: {
         experimental_listDescendants: ({ threadIds }) => ({

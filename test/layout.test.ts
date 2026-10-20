@@ -45,15 +45,17 @@ const describeImport = ({ file, specifier }: Import): string => `${file} imports
 const breaksSrcRule = ({ specifier, target }: Import): boolean =>
   target !== null ? !inside(target, "src") : !isBuiltin(specifier);
 
+const isSelfImport = (specifier: string): boolean => specifier === "burn" || specifier.startsWith("burn/");
+
 // pi loads the extension from the package, where only declared dependencies resolve: no zod, no bb SDK.
 const breaksPiRule = ({ specifier, target }: Import): boolean => {
   if (target !== null) return !inside(target, "extensions/pi") && !inside(target, "src");
-  return specifier === "zod" || specifier.startsWith("@get-bb/") || specifier.startsWith("pi-burn");
+  return specifier === "zod" || specifier.startsWith("@get-bb/") || isSelfImport(specifier);
 };
 
 const breaksBbRule = ({ specifier, target }: Import): boolean => {
   if (target !== null) return !inside(target, "extensions/bb") && !inside(target, "src");
-  return specifier.startsWith("@earendil-works/") || specifier.startsWith("pi-burn");
+  return specifier.startsWith("@earendil-works/") || isSelfImport(specifier);
 };
 
 describe("repository layout", () => {

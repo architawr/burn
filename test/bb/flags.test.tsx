@@ -22,7 +22,7 @@ const FLAG = { icon: "burn-flame", label: "Over budget · $12.40 of $10", tone: 
 
 async function mountScripts(omit = false) {
   const app = await loadPluginApp(() => import("../../extensions/bb/app.js"));
-  const mounted = await mountPluginContentScripts(app, { pluginId: "pi-burn", omitExperimentalThreadRowStatus: omit });
+  const mounted = await mountPluginContentScripts(app, { pluginId: "burn", omitExperimentalThreadRowStatus: omit });
   scripts.push(mounted);
   return mounted;
 }

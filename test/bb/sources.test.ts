@@ -35,7 +35,7 @@ function setup(threads: Record<string, Thread>, opts: { offline?: string[] } = {
   let getGate: Promise<void> | null = null;
   let now = 1_000_000;
   const { bb, harness } = createFakePluginHost({
-    pluginId: "pi-burn",
+    pluginId: "burn",
     sdk: {
       threads: {
         get: async ({ threadId }: { threadId: string }) => {
@@ -284,7 +284,7 @@ describe("createReportSource with the real host entry", () => {
       },
     });
     const { bb, harness } = createFakePluginHost({
-      pluginId: "pi-burn",
+      pluginId: "burn",
       sdk: {
         threads: {
           get: async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, providerId: "pi", environmentId: "env_1", status: "active" }),

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createBbReporter } from "../../extensions/pi/bb-report.js";
 import { sampleReport } from "../helpers.js";
 
-const URL_OK = "http://127.0.0.1:38886/api/v1/plugins/pi-burn/http/usage";
+const URL_OK = "http://127.0.0.1:38886/api/v1/plugins/burn/http/usage";
 const THREAD = "thr_abc123def4";
 const env = { BURN_BB_URL: URL_OK, BB_THREAD_ID: THREAD };
 const ok = () => new Response(JSON.stringify({ ok: true }), { status: 200 });

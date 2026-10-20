@@ -42,7 +42,7 @@ async function setup(opts: Options = {}) {
   const statuses = opts.statuses ?? {};
   const rows = opts.events ?? [];
   const { bb, harness } = createFakePluginHost({
-    pluginId: "pi-burn",
+    pluginId: "burn",
     settings: opts.settings,
     sdk: {
       threads: {
@@ -222,7 +222,7 @@ describe("POST /usage", () => {
   it("gives pi the report address", async () => {
     const s = await setup();
     const entries = await s.harness.behavior.resolveProviderEnv("pi", { threadId: THREAD, projectId: "proj_1", hostId: "host_1" });
-    expect(entries.map((e) => [e.name, e.value])).toEqual([["BURN_BB_URL", { serverPath: "/api/v1/plugins/pi-burn/http/usage" }]]);
+    expect(entries.map((e) => [e.name, e.value])).toEqual([["BURN_BB_URL", { serverPath: "/api/v1/plugins/burn/http/usage" }]]);
   });
 
   it("forgets a deleted thread's report, budget, log copy and stop", async () => {
@@ -535,7 +535,7 @@ describe("costs, overBudget and family", () => {
   });
 
   it("still answers when bb cannot list child threads", async () => {
-    const { bb, harness } = createFakePluginHost({ pluginId: "pi-burn" });
+    const { bb, harness } = createFakePluginHost({ pluginId: "burn" });
     await plugin(bb);
     disposers.push(() => harness.lifecycle.dispose());
     const got = (await harness.behavior.callRpc("usage", { threadId: THREAD })) as Record<string, any>;
