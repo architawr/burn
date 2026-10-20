@@ -1,0 +1,49 @@
+# Troubleshooting and limits
+
+## Troubleshooting
+
+- **The chip shows a dashed "—" in bb.** The thread has made no model call yet, or its harness sends bb no usage. For a pi thread it can also mean that Burn found no session log on the thread's machine and no report from pi. Check that bb keeps its pi sessions in the default folder; see [session logs](#session-logs) below.
+- **The chip is dimmed with an age such as "3h".** bb says a pi thread is working, but its session log has not changed since then, so pi may have stopped. Threads of other harnesses are never dimmed, because a Claude Code turn can run for minutes before bb records its usage.
+- **There is no chip in bb.** Check that the **Cost chip** setting in Burn's plugin settings is on. `bb plugin list` should show `pi-burn` as running.
+- **The chip is in the thread header, not the footer.** Burn did not find bb's footer markup; see [bb's page markup](#bbs-page-markup) below. The chip works the same there.
+- **There is no pill in pi.** The pill shows only in pi's terminal UI. `/burn` works in any mode.
+
+## Limits
+
+### bb's page markup
+
+bb's footer has no plugin slot. The chip is a thread header action that moves itself next to the context circle by finding bb's page markup (`[data-follow-up-composer-footer]`). If bb changes that markup, the chip stays in the thread header.
+
+The sidebar flag uses an experimental bb API, so on a bb without it the flag does not show. It covers every thread whose pi extension has reported, and every other thread active in the last 30 days.
+
+### Session logs
+
+Burn reads pi's session logs from `~/.bb/pi-bridge-sessions` on each machine. bb's pi bridge can be pointed elsewhere with `BB_PI_BRIDGE_SESSION_DIR`, but Burn does not follow it.
+
+After a machine's bb daemon restarts, live updates for its threads resume within a minute.
+
+### Prices
+
+Dollar figures are list prices: either the ones pi recorded, or Burn's estimates (`~$`). Neither knows about discounts or what a proxy actually bills. Estimates also price every cache write as a five-minute write, because bb's usage events do not say which writes were one-hour writes.
+
+Router aliases such as `shopify/auto-best` have no known price, so their threads show tokens. A cost in a currency other than US dollars is not converted, so that thread shows tokens too.
+
+### Harnesses other than pi
+
+- A harness that sends bb no usage shows nothing.
+- Call time and failed calls come only from pi's session logs, and only from the calls pi timed. Codex and Claude Code record neither, so their figures read "—".
+- Claude Code threads update once per turn and do not count Claude Code's subagents. They are never stopped at their budget, though budget alerts still fire.
+- Usage that bb deleted before Burn first read a thread counts as one entry: the total is right, but the split by day and model is lost. Claude Code's running total can start again between turns, so for a Claude Code thread such usage is lost instead.
+
+### The Burn page
+
+- The page counts the spend of every thread by the days on which its model calls were made.
+- The Models table's cache hit rate, average call time, output per second and failure rate cover the whole life of the threads in the range, not only the chosen days.
+- The activity map counts by UTC clock hour. In a time zone with a half-hour offset it shifts by half an hour, so calls in the first half hour after midnight show on the previous day.
+- A report from a Burn 0.2 pi extension, or the last report of an offline machine, has no token, call-time or hourly detail until Burn reads the thread again.
+
+### Stopping and counting
+
+- The server-side stop, used when the pi extension is not installed, ends the thread's current work through bb.
+- A forked session counts only from its creation, so pi's own footer reads higher for it.
+- pi orders status entries by key, so where the pill sits next to other markers is up to pi.
