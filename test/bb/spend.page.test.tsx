@@ -258,7 +258,11 @@ describe("Spend page", () => {
     expect(slot.container.textContent).toContain("3 running · 2 over budget");
     expect(server.inputs.at(-1)).not.toHaveProperty("listPrice");
 
-    const prices = within(slot.getByRole("group", { name: "Prices" }));
+    const group = slot.getByRole("group", { name: "Prices" });
+    // Beside the note it explains, not in the toolbar, which has no room for it.
+    expect(slot.getByRole("group", { name: "Show" }).parentElement?.contains(group)).toBe(false);
+    expect(group.parentElement?.contains(slot.getByTestId("discounted"))).toBe(true);
+    const prices = within(group);
     fireEvent.click(prices.getByRole("button", { name: "List price" }));
     expect(await slot.findByText("$115.95")).toBeTruthy();
     expect(server.inputs.at(-1)).toMatchObject({ listPrice: true });

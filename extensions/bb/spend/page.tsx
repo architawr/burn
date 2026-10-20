@@ -169,8 +169,6 @@ const PRICES: { value: Prices; label: string }[] = [
 function Toolbar({
   metric,
   onMetric,
-  prices,
-  onPrices,
   range,
   onRange,
   zone,
@@ -182,9 +180,6 @@ function Toolbar({
 }: {
   metric: SpendMetric;
   onMetric: (metric: SpendMetric) => void;
-  /** null while no discount is set, so there is nothing to switch. */
-  prices: Prices | null;
-  onPrices: (prices: Prices) => void;
   range: SpendRange;
   onRange: (range: SpendRange) => void;
   zone: SpendZone;
@@ -198,7 +193,6 @@ function Toolbar({
     <div className="flex flex-wrap items-center gap-2">
       <span className="text-xs text-muted-foreground">Show</span>
       <Segments label="Show" items={METRICS.map((m) => ({ value: m.metric, label: m.label }))} value={metric} onChange={onMetric} />
-      {prices !== null ? <Segments label="Prices" items={PRICES} value={prices} onChange={onPrices} /> : null}
       <span className="flex-1" />
       <PanelsMenu panels={panels} />
       <select
@@ -553,7 +547,18 @@ function Pair({ left, right }: { left: ReactNode; right: ReactNode }) {
 
 const CARD = "min-w-0 rounded-lg border border-border p-3";
 
-function Dashboard({ data, panels, discounted }: { data: SpendOutput; panels: Panels; discounted: boolean }) {
+function Dashboard({
+  data,
+  panels,
+  prices,
+  onPrices,
+}: {
+  data: SpendOutput;
+  panels: Panels;
+  /** null while no discount is set, so there is nothing to switch. */
+  prices: Prices | null;
+  onPrices: (prices: Prices) => void;
+}) {
   const { metric } = data;
   const shown = (id: SpendPanel, panel: () => ReactNode, className?: string): ReactNode =>
     panels.shown(id) ? <div className={cn("group min-w-0", className)}>{panel()}</div> : null;
@@ -566,10 +571,13 @@ function Dashboard({ data, panels, discounted }: { data: SpendOutput; panels: Pa
         <Kpis data={data} />
         {shown("usage", () => <UsageCards data={data} />)}
         {data.estimated ? <p className="text-xs text-muted-foreground">~ includes estimates from list prices for harnesses that record no cost.</p> : null}
-        {discounted ? (
-          <p className="text-xs text-muted-foreground" data-testid="discounted">
-            {data.listPrice ? "List price, without your discounts. Budgets use the discounted figures." : "Costs include the discounts in Burn's settings."}
-          </p>
+        {prices !== null ? (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            <Segments label="Prices" items={PRICES} value={prices} onChange={onPrices} />
+            <p className="text-xs text-muted-foreground" data-testid="discounted">
+              {data.listPrice ? "List price, without your discounts. Budgets use the discounted figures." : "Costs include the discounts in Burn's settings."}
+            </p>
+          </div>
         ) : null}
       </div>
       {shown("chart", () => (
@@ -676,7 +684,7 @@ export function SpendPage({ subPath }: PluginNavPanelProps): ReactNode {
             Could not refresh: {error}
           </div>
         ) : null}
-        <Dashboard data={data} panels={panels} discounted={discounted} />
+        <Dashboard data={data} panels={panels} prices={discounted ? prices : null} onPrices={setPrices} />
       </>
     );
   }
@@ -687,8 +695,6 @@ export function SpendPage({ subPath }: PluginNavPanelProps): ReactNode {
         <Toolbar
           metric={metric}
           onMetric={setMetric}
-          prices={discounted ? prices : null}
-          onPrices={setPrices}
           range={range}
           onRange={setRange}
           zone={zone}
