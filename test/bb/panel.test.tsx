@@ -4,7 +4,7 @@ import { loadPluginApp, type RenderedSlot, renderSlot } from "@get-bb/plugin-sdk
 import { fireEvent, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { rpcContract } from "../../extensions/bb/contract.js";
-import { sampleReport } from "../helpers.js";
+import { modelRow, sampleReport } from "../helpers.js";
 import { answer, backend, CHILD, THREAD } from "./fixtures.js";
 
 vi.mock("sonner", () => ({ toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), warning: vi.fn() }) }));
@@ -45,6 +45,31 @@ describe("the Burn panel", () => {
     }
     expect(slot.container.textContent).not.toMatch(/saved|\/h\b|per hour|Jump to message|~/);
     expect(slot.queryByTestId("estimated")).toBeNull();
+  });
+
+  it("shows output speed over the timed calls, for the thread, each model and each turn", async () => {
+    const report = sampleReport({
+      byModel: [
+        modelRow("p/claude-opus", 4.31, 1_500_000, 18, { timed: 18, ms: 36_000, timedOutput: 2232 }),
+        modelRow("p/claude-haiku", 0.51, 236_000, 5, { timed: 5, ms: 5000, timedOutput: 1000 }),
+      ],
+    });
+    report.turns[1] = { ...report.turns[1]!, ms: 8000, timedOutput: 496 };
+    const slot = await renderPanel(backend(() => answer({ report })));
+    expect(slot.getByTestId("kpis").textContent).toContain("Speed79 tok/soutput, timed calls");
+    const models = slot.getByTestId("models").textContent ?? "";
+    expect(models).toContain("claude-opus18 calls · 62 tok/s");
+    expect(models).toContain("claude-haiku5 calls · 200 tok/s");
+    fireEvent.click(slot.getByRole("button", { name: /refactor the parser/ }));
+    expect(slot.getByTestId("turn-2-detail").textContent).toContain("62 tok/s");
+    fireEvent.click(slot.getByRole("button", { name: /review/ }));
+    expect(slot.getByTestId("turn-3-detail").textContent).not.toContain("tok/s");
+  });
+
+  it("says when no call was timed, as in harnesses that record no call times", async () => {
+    const slot = await renderPanel(backend());
+    expect(slot.getByTestId("kpis").textContent).toContain("Speed—no timed calls");
+    expect(slot.getByTestId("models").textContent).not.toContain("tok/s");
   });
 
   it("marks list-price estimates in the figures, the children and the total, and says why", async () => {

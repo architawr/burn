@@ -568,12 +568,12 @@ describe("spend by tokens and calls", () => {
     expect(inUtc.activity.find((r) => r.day === "2026-10-17")?.hours[23]).toBe(100);
   });
 
-  it("keeps one model's rows apart per harness, and takes the ratios from the threads' whole lives", async () => {
+  it("keeps one model's rows apart per harness, and takes the ratios from the threads' whole lives, output speed from timed calls only", async () => {
     const opus = { "p/opus": { cost: 2, calls: 4, tokens: 900 } };
     const s = await setup({
       reports: {
         thr_aaaaaa01: reportWith([day(0, 2, opus, 4)], {
-          byModel: [modelRow("p/opus", 9, 9000, 10, { input: 100, cacheRead: 300, cacheWrite: 100, output: 2000, timed: 10, ms: 8000, failed: 1 })],
+          byModel: [modelRow("p/opus", 9, 9000, 10, { input: 100, cacheRead: 300, cacheWrite: 100, output: 2000, timed: 8, ms: 8000, timedOutput: 1600, failed: 1 })],
         }),
         thr_aaaaaa02: reportWith([day(0, 2, opus, 4)], {
           estimated: true,
@@ -585,7 +585,7 @@ describe("spend by tokens and calls", () => {
     const out = await s.spend({ range: "7d", projectId: null });
     expect(out.modelStats).toEqual([
       { key: "p/opus", harness: "Claude Code", cost: 2, tokens: 900, calls: 4, cacheHitPct: 50, avgCallMs: null, outputPerSec: null, failedPct: null, estimated: true },
-      { key: "p/opus", harness: "pi", cost: 2, tokens: 900, calls: 4, cacheHitPct: 60, avgCallMs: 800, outputPerSec: 250, failedPct: 10, estimated: false },
+      { key: "p/opus", harness: "pi", cost: 2, tokens: 900, calls: 4, cacheHitPct: 60, avgCallMs: 1000, outputPerSec: 200, failedPct: 12.5, estimated: false },
     ]);
   });
 

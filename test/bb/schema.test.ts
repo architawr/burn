@@ -80,10 +80,17 @@ describe("usageReportSchema", () => {
       failed: 0,
       aborted: 0,
     });
-    expect(parsed.byModel[0]).toEqual({ key: "p/m", cost: 1, tokens: 5, calls: 2, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, ms: 0, timed: 0, failed: 0 });
+    expect(parsed.byModel[0]).toEqual({ key: "p/m", cost: 1, tokens: 5, calls: 2, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, ms: 0, timed: 0, timedOutput: 0, failed: 0 });
     // Each parse gets its own zeros, so changing one report's cannot change another's.
     expect(usageReportSchema.parse(report).days[0]?.tokens).not.toBe(parsed.days[0]?.tokens);
     expect(parsed.days[0]?.callTime).not.toBe(parsed.utcDays[0]?.callTime);
+  });
+
+  it("reads model rows from Burn 0.5, which do not count timed output, with it when every call was timed", () => {
+    const row = { key: "p/m", cost: 1, tokens: 5, calls: 4, output: 800, timed: 4, ms: 2000 };
+    const parsed = usageReportSchema.parse({ ...sampleReport(), byModel: [row, { ...row, key: "p/n", timed: 3 }] });
+    expect(parsed.byModel.map((m) => m.timedOutput)).toEqual([800, 0]);
+    expect(usageReportSchema.parse({ ...sampleReport(), byModel: [{ ...row, timedOutput: 600 }] }).byModel[0]?.timedOutput).toBe(600);
   });
 
   it("reads a report from Burn 0.2, which has no hours, with none, and bounds the hours and call-time buckets", () => {
@@ -124,6 +131,7 @@ describe("usageReportSchema", () => {
         cacheWrite: 123_456_789,
         timed: 12_345,
         ms: 123_456_789_012,
+        timedOutput: 123_456_789,
         failed: 12_345,
       })),
       series: Array.from({ length: SERIES_MAX }, () => ({ at: 1_792_361_592_787, cost: f, tokens: 123_456, turn: 50 })),
@@ -138,6 +146,8 @@ describe("usageReportSchema", () => {
         callCosts: Array.from({ length: CALL_COSTS_MAX }, () => f),
         tools: Array.from({ length: TURN_TOOLS_MAX }, (_, i) => ({ name: `tool_name_number_${i}`, count: 999 })),
         models: Array.from({ length: TURN_MODELS_MAX }, (_, i) => key(i)),
+        ms: 123_456_789,
+        timedOutput: 123_456,
       })),
       days: Array.from({ length: DAYS_MAX }, (_, i) => day(i)),
       utcDays: Array.from({ length: DAYS_MAX }, (_, i) => day(i)),

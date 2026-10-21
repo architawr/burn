@@ -38,6 +38,9 @@ const turnSchema = z.object({
   callCosts: z.array(amount).max(CALL_COSTS_MAX),
   tools: z.array(z.object({ name: key, count })).max(TURN_TOOLS_MAX),
   models: z.array(key).max(TURN_MODELS_MAX),
+  // Burn 0.5 reports do not time turns.
+  ms: amount.default(0),
+  timedOutput: amount.default(0),
 });
 
 const daySchema = z.object({
@@ -80,8 +83,11 @@ const common = {
         cacheWrite: amount.default(0),
         timed: count.default(0),
         ms: amount.default(0),
+        timedOutput: amount.optional(),
         failed: count.default(0),
-      }),
+      })
+      // Burn 0.5 reports do not count timed output; it is the whole output only when every call was timed.
+      .transform(({ timedOutput, ...row }) => ({ ...row, timedOutput: timedOutput ?? (row.timed === row.calls ? row.output : 0) })),
     )
     .max(MODELS_MAX),
 };

@@ -116,7 +116,7 @@ describe("BurnPanel views", () => {
   it("shows tokens for a session that reports no cost", () => {
     const report = sampleReport({
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-      byModel: [{ key: "p/local", cost: 0, tokens: 1_736_000, calls: 23, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, timed: 0, ms: 0, failed: 0 }],
+      byModel: [{ key: "p/local", cost: 0, tokens: 1_736_000, calls: 23, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, timed: 0, ms: 0, timedOutput: 0, failed: 0 }],
     });
     const out = text(panel({ report }).p.render(100));
     expect(out).toContain("1.7M tok used");

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chipView, STALE_MS } from "../../extensions/bb/chip.js";
 import type { rpcContract, UsageAnswer } from "../../extensions/bb/contract.js";
 import { buildReport } from "../../src/report.js";
-import { sampleReport } from "../helpers.js";
+import { modelRow, sampleReport } from "../helpers.js";
 import { answer, backend, THREAD } from "./fixtures.js";
 
 const toast = vi.hoisted(() => Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() }));
@@ -339,6 +339,14 @@ describe("the chip's popover", () => {
     expect(text).not.toMatch(/saved|per hour|\/ ?hour/);
     fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
     await vi.waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
+  });
+
+  it("shows each model's output speed over its timed calls", async () => {
+    const report = sampleReport({ byModel: [modelRow("p/claude-opus", 4.31, 1_500_000, 18, { timed: 18, ms: 36_000, timedOutput: 2232 }), modelRow("p/claude-haiku", 0.51, 236_000, 5)] });
+    const card = await openCard(await renderChip(backend(() => answer({ report }))));
+    const models = card.getByTestId("models").textContent ?? "";
+    expect(models).toContain("claude-opus18 calls · 62 tok/s");
+    expect(models).toContain("claude-haiku5 calls$0.51");
   });
 
   it("adds the child threads' cost, and says when the figures last changed wherever they come from", async () => {

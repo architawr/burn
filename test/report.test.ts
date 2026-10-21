@@ -9,8 +9,10 @@ import {
   forkedAt,
   HOUR_MS,
   HOURS_MAX,
+  outputPerSec,
   PROMPT_MAX,
   promptExcerpt,
+  reportOutputPerSec,
   slimEntry,
   TURNS_MAX,
 } from "../src/report.js";
@@ -242,7 +244,25 @@ describe("buildReport usage detail", () => {
   it("leaves a call without a usable duration untimed and never failed", () => {
     const r = buildReport([user(), call(undefined, "error"), call(-5, "error"), call(Number.POSITIVE_INFINITY, "aborted")], null);
     expect(r.days[0]).toMatchObject({ calls: 3, failed: 0, aborted: 0, callTime: new Array(CALL_TIME_BUCKETS).fill(0) });
-    expect(r.byModel[0]).toMatchObject({ calls: 3, timed: 0, ms: 0, failed: 0 });
+    expect(r.byModel[0]).toMatchObject({ calls: 3, timed: 0, ms: 0, timedOutput: 0, failed: 0 });
+  });
+
+  it("counts the output of timed calls apart, so an untimed call does not skew the rate", () => {
+    const timed = assistant(1, "m1", { output: 600 }, "p", [], { durationMs: 3000 });
+    const untimed = assistant(1, "m1", { output: 900 });
+    const r = buildReport([user(), timed, untimed, timed, user(), untimed], null);
+    expect(r.byModel[0]).toMatchObject({ calls: 4, output: 3000, timed: 2, ms: 6000, timedOutput: 1200 });
+    expect(outputPerSec(r.byModel[0]!)).toBe(200);
+    expect(reportOutputPerSec(r)).toBe(200);
+    expect(r.turns.map((t) => [t.ms, t.timedOutput])).toEqual([
+      [6000, 1200],
+      [0, 0],
+    ]);
+  });
+
+  it("gives no rate without timed output", () => {
+    expect(outputPerSec({ timedOutput: 0, ms: 4000 })).toBeNull();
+    expect(outputPerSec({ timedOutput: 50, ms: 0 })).toBeNull();
   });
 
   it("counts timed calls that failed or were stopped, on the day and on the model", () => {
@@ -265,7 +285,7 @@ describe("buildReport usage detail", () => {
     const entries: EntryLike[] = [user()];
     for (let i = 1; i <= 9; i++) entries.push(assistant(i, `m${i}`, {}, "p", [], { durationMs: 1000, stopReason: i === 1 ? "error" : "stop" }));
     const other = buildReport(entries, null).byModel.at(-1);
-    expect(other).toMatchObject({ key: "Other", calls: 2, timed: 2, ms: 2000, failed: 1, input: 200, output: 100, cacheRead: 0, cacheWrite: 0 });
+    expect(other).toMatchObject({ key: "Other", calls: 2, timed: 2, ms: 2000, timedOutput: 100, failed: 1, input: 200, output: 100, cacheRead: 0, cacheWrite: 0 });
   });
 
   it("totals each UTC clock hour, counting calls only from calls, and keeps the newest HOURS_MAX hours", () => {

@@ -28,6 +28,9 @@ export function formatTokens(n: number): string {
 /** For totals across threads, which pass a billion; formatTokens keeps pi's footer rules. */
 export const formatTokenCount = (n: number): string => (n < 1e9 ? formatTokens(n) : `${(n / 1e9).toFixed(n < 1e10 ? 2 : 1)}B`);
 
+/** Output speed: "4.6 tok/s" under ten, else "62 tok/s" or "2.1k tok/s". */
+export const formatSpeed = (perSec: number): string => `${perSec < 10 ? perSec.toFixed(1) : formatTokens(Math.round(perSec))} tok/s`;
+
 /** How long a model call took: "6.8s" under ten seconds, else "27s" or "1m 05s". */
 export const formatCallTime = (ms: number): string => (ms < 10_000 ? `${(ms / 1000).toFixed(1)}s` : formatDuration(ms));
 

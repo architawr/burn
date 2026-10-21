@@ -68,6 +68,8 @@ const turnRow = (n: number, minute: number, prompt: string, callCosts: number[],
   callCosts,
   tools: tools.map(([name, count]) => ({ name, count })),
   models: ["p/claude-opus"],
+  ms: 0,
+  timedOutput: 0,
 });
 
 /** A day row with these models' costs and every other detail zero. */
@@ -98,6 +100,7 @@ export const modelRow = (key: string, cost: number, tokens: number, calls: numbe
   cacheWrite: 0,
   timed: 0,
   ms: 0,
+  timedOutput: 0,
   failed: 0,
   ...over,
 });

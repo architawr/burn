@@ -25,6 +25,8 @@ export interface ModelRow extends TokenParts {
   timed: number;
   /** The timed calls' durations added up. */
   ms: number;
+  /** The timed calls' output tokens, so a rate over `ms` leaves untimed calls out. */
+  timedOutput: number;
   failed: number;
 }
 
@@ -53,6 +55,9 @@ export interface TurnRow {
   tools: { name: string; count: number }[];
   /** provider/model keys the turn's calls used. */
   models: string[];
+  /** The timed calls' durations added up, and their output tokens. */
+  ms: number;
+  timedOutput: number;
 }
 
 /** Spend on one calendar day, YYYY-MM-DD. */
@@ -125,6 +130,17 @@ export const CALL_TIME_EDGES_MS = [1000, 2000, 4000, 8000, 16000, 32000, 64000, 
 export const CALL_TIME_BUCKETS = CALL_TIME_EDGES_MS.length + 1;
 export const HOURS_MAX = 31 * 24;
 export const HOUR_MS = 3_600_000;
+
+/** Output tokens per second over the timed calls, or null with no timed output. */
+export const outputPerSec = ({ timedOutput, ms }: { timedOutput: number; ms: number }): number | null =>
+  timedOutput > 0 && ms > 0 ? timedOutput / (ms / 1000) : null;
+
+/** The whole thread's output tokens per second, over every model's timed calls. */
+export const reportOutputPerSec = (report: UsageReport): number | null =>
+  outputPerSec({
+    timedOutput: report.byModel.reduce((sum, m) => sum + m.timedOutput, 0),
+    ms: report.byModel.reduce((sum, m) => sum + m.ms, 0),
+  });
 
 /** The index of the call-time bucket that `ms` falls in. */
 export function callTimeBucket(ms: number): number {
@@ -315,7 +331,7 @@ interface Sample {
   stopReason: string | undefined;
 }
 
-const newModelRow = (key: string): ModelRow => ({ key, cost: 0, tokens: 0, calls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, timed: 0, ms: 0, failed: 0 });
+const newModelRow = (key: string): ModelRow => ({ key, cost: 0, tokens: 0, calls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, timed: 0, ms: 0, timedOutput: 0, failed: 0 });
 
 function dayDraft(days: Map<string, DayDraft>, day: string): DayDraft {
   let draft = days.get(day);
@@ -383,6 +399,7 @@ function foldModels(rows: Map<string, ModelRow>): ModelRow[] {
     other.cacheWrite += r.cacheWrite;
     other.timed += r.timed;
     other.ms += r.ms;
+    other.timedOutput += r.timedOutput;
     other.failed += r.failed;
   }
   return [...head, other];
@@ -421,6 +438,8 @@ function newTurn(n: number, at: number, prompt: string): TurnDraft {
     callCosts: [],
     tools: [],
     models: [],
+    ms: 0,
+    timedOutput: 0,
     toolCounts: new Map(),
   };
 }
@@ -518,14 +537,17 @@ export function buildReport(
     row.output += usage.output;
     row.cacheRead += usage.cacheRead;
     row.cacheWrite += usage.cacheWrite;
+    const current: TurnDraft = turn ?? (turn = newTurn(0, at, ""));
     if (ms !== null) {
       row.timed++;
       row.ms += ms;
+      row.timedOutput += usage.output;
       if (stopReason === "error") row.failed++;
+      current.ms += ms;
+      current.timedOutput += usage.output;
     }
     models.set(key, row);
 
-    const current: TurnDraft = turn ?? (turn = newTurn(0, at, ""));
     current.endAt = at;
     current.cost += usage.cost.total;
     current.tokens.input += usage.input;

@@ -7,12 +7,13 @@ import {
   formatClock,
   formatDelta,
   formatDuration,
+  formatSpeed,
   formatUsd,
   isTokenOnly,
   modelName,
   usageLabel,
 } from "../../src/format.js";
-import type { UsageReport } from "../../src/report.js";
+import { outputPerSec, type UsageReport } from "../../src/report.js";
 import { BudgetEditor } from "./budget-editor.js";
 import { budgetWords, type EffectiveBudget } from "./budgets.js";
 import { CallChart, callPoints, Meter, StackedBar } from "./charts.js";
@@ -137,16 +138,24 @@ export function Models({ report }: { report: UsageReport }): ReactNode {
   return (
     <div data-testid="models">
       <Label>Models</Label>
-      {report.byModel.map((m) => (
-        <div key={m.key} className="grid grid-cols-[1fr_auto_3rem] items-center gap-2 py-0.5 text-xs">
-          <span className="min-w-0 truncate" title={m.key}>
-            {modelName(m.key)}
-            {m.calls > 0 ? <small className="ml-1 text-muted-foreground">{m.calls} calls</small> : null}
-          </span>
-          <Meter fraction={m.cost / top} fill="bg-timeline-accent" className="h-1 w-16" />
-          <span className="text-right tabular-nums">{formatUsd(m.cost)}</span>
-        </div>
-      ))}
+      {report.byModel.map((m) => {
+        const speed = outputPerSec(m);
+        return (
+          <div key={m.key} className="grid grid-cols-[1fr_auto_3rem] items-center gap-2 py-0.5 text-xs">
+            {/* The name gives way before the calls and speed do; the title keeps it whole. */}
+            <span className="flex min-w-0 items-baseline gap-1" title={m.key}>
+              <span className="truncate">{modelName(m.key)}</span>
+              {m.calls > 0 ? (
+                <small className="shrink-0 text-muted-foreground tabular-nums">
+                  {m.calls} calls{speed !== null ? ` · ${formatSpeed(speed)}` : ""}
+                </small>
+              ) : null}
+            </span>
+            <Meter fraction={m.cost / top} fill="bg-timeline-accent" className="h-1 w-16" />
+            <span className="text-right tabular-nums">{formatUsd(m.cost)}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }

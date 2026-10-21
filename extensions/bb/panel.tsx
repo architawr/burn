@@ -5,6 +5,7 @@ import {
   formatBudget,
   formatClock,
   formatDuration,
+  formatSpeed,
   formatTokens,
   formatUsd,
   isTokenOnly,
@@ -12,7 +13,7 @@ import {
   turnMultiple,
   usageLabel,
 } from "../../src/format.js";
-import type { TurnRow, UsageReport } from "../../src/report.js";
+import { outputPerSec, reportOutputPerSec, type TurnRow, type UsageReport } from "../../src/report.js";
 import { BudgetEditor } from "./budget-editor.js";
 import { BudgetStatus, CopyAction, EstimatedNote, Label, Models, StoppedNotice, WaitingNotice, WhereItWent } from "./card.js";
 import { MiniBars } from "./charts.js";
@@ -45,6 +46,7 @@ function Kpis({ answer, report, atList }: { answer: UsageAnswer; report: UsageRe
   const { family, budget } = answer;
   const kids = family.children.length;
   const fromKids = family.total - own;
+  const speed = reportOutputPerSec(report);
   const share = budget !== null && !tokenOnly ? `${Math.round((own / budget.amount) * 100)}% of ${formatBudget(budget.amount)} budget` : "No budget";
   return (
     <div className="grid grid-cols-[repeat(auto-fit,minmax(8.5rem,1fr))] gap-2" data-testid="kpis">
@@ -64,6 +66,7 @@ function Kpis({ answer, report, atList }: { answer: UsageAnswer; report: UsageRe
         sub={`${report.calls} calls · ${formatDuration(report.updatedAt - report.startedAt)}`}
       />
       <Kpi label="Cache" value={report.cacheHitPct !== null ? `${report.cacheHitPct.toFixed(0)}%` : "—"} sub="hit rate" />
+      <Kpi label="Speed" value={speed !== null ? formatSpeed(speed) : "—"} sub={speed !== null ? "output, timed calls" : "no timed calls"} />
     </div>
   );
 }
@@ -74,6 +77,7 @@ function TurnDetail({ turn, multiple }: { turn: TurnRow; multiple: number | null
   const hot = multiple !== null && multiple >= HOT_MULTIPLE;
   const peak = turn.callCosts.indexOf(Math.max(...turn.callCosts));
   const partial = turn.calls > turn.callCosts.length;
+  const speed = outputPerSec(turn);
   return (
     <div className="grid gap-2 border-t border-border bg-timeline-accent/5 py-2.5 pr-3 pl-10 text-xs" data-testid={`turn-${turn.n}-detail`}>
       <div className="flex flex-wrap gap-x-3.5 gap-y-1 text-muted-foreground">
@@ -81,6 +85,7 @@ function TurnDetail({ turn, multiple }: { turn: TurnRow; multiple: number | null
           <b className="font-semibold text-foreground tabular-nums">{turn.calls}</b> calls
         </span>
         <b className="font-semibold text-foreground tabular-nums">{formatDuration(turn.endAt - turn.at)}</b>
+        {speed !== null ? <b className="font-semibold text-foreground tabular-nums">{formatSpeed(speed)}</b> : null}
         {turn.models.length > 0 ? <span>{turn.models.map(modelName).join(", ")}</span> : null}
         {hot ? <span className="text-[11px] font-semibold text-warning-text">{multiple.toFixed(1)}× the median turn</span> : null}
       </div>

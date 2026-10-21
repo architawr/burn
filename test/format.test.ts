@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cumulative, formatCallTime, formatDelta, formatTokenCount, formatTokens, formatUsd, sparkline } from "../src/format.js";
+import { cumulative, formatCallTime, formatDelta, formatSpeed, formatTokenCount, formatTokens, formatUsd, sparkline } from "../src/format.js";
 
 describe("formatUsd", () => {
   it("formats the boundaries", () => {
@@ -25,6 +25,14 @@ describe("formatCallTime", () => {
     expect(formatCallTime(6_758)).toBe("6.8s");
     expect(formatCallTime(27_379)).toBe("27s");
     expect(formatCallTime(65_000)).toBe("1m 05s");
+  });
+});
+
+describe("formatSpeed", () => {
+  it("gives one decimal under ten tokens a second, then whole tokens and thousands", () => {
+    expect(formatSpeed(4.56)).toBe("4.6 tok/s");
+    expect(formatSpeed(62.4)).toBe("62 tok/s");
+    expect(formatSpeed(2134)).toBe("2.1k tok/s");
   });
 });
 

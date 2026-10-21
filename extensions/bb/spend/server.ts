@@ -1,7 +1,7 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { budgetState } from "../../../src/budget.js";
 import { formatAmount, formatBudget, median, modelName } from "../../../src/format.js";
-import { CALL_TIME_BUCKETS, type DayRow, dayKey, type ModelRow, OTHER_KEY, TOOLS_KEY, type UsageReport } from "../../../src/report.js";
+import { CALL_TIME_BUCKETS, type DayRow, dayKey, type ModelRow, OTHER_KEY, outputPerSec, TOOLS_KEY, type UsageReport } from "../../../src/report.js";
 import type { BurnAlert } from "../alerts.js";
 import { harnessName } from "../harnesses.js";
 import { REPORT_PREFIX, SPEND_PANELS_KEY } from "../keys.js";
@@ -209,7 +209,7 @@ function sumRange(counted: readonly Counted[], dayList: readonly string[], tz: S
     }
     for (const m of row.report.byModel) {
       const key = `${providerId}\n${m.key}`;
-      const life = sums.life.get(key) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, calls: 0, timed: 0, ms: 0, failed: 0 };
+      const life = sums.life.get(key) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, calls: 0, timed: 0, ms: 0, timedOutput: 0, failed: 0 };
       life.input += m.input;
       life.output += m.output;
       life.cacheRead += m.cacheRead;
@@ -217,6 +217,7 @@ function sumRange(counted: readonly Counted[], dayList: readonly string[], tz: S
       life.calls += m.calls;
       life.timed += m.timed;
       life.ms += m.ms;
+      life.timedOutput += m.timedOutput;
       life.failed += m.failed;
       sums.life.set(key, life);
     }
@@ -232,8 +233,7 @@ function ratios(life: Life | undefined): Pick<SpendOutput["modelStats"][number],
   return {
     cacheHitPct: prompt > 0 ? (life.cacheRead / prompt) * 100 : null,
     avgCallMs: life.timed > 0 ? life.ms / life.timed : null,
-    // Only when every call was timed, so untimed calls' output does not inflate the rate.
-    outputPerSec: life.timed === life.calls && life.ms > 0 ? life.output / (life.ms / 1000) : null,
+    outputPerSec: outputPerSec(life),
     failedPct: life.timed > 0 ? (life.failed / life.timed) * 100 : null,
   };
 }

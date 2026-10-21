@@ -10,6 +10,8 @@ On a phone, bb shows the row under the prompt box only while the prompt box is e
 
 ![The Burn card above the chip: $4.27 for this thread, $4.40 with its child thread](../assets/screenshots/bb-chip-card.png)
 
+Each model in the card shows its calls and its output speed, for example `41 calls · 62 tok/s`. The speed is the output tokens of the calls pi timed, divided by how long those calls took. A call's time runs from the request to the last token, so it includes the wait for the first token, and the speed reads lower than a provider's quoted generation speed. Only pi times its calls, so threads in other harnesses show no speed.
+
 Amounts that Burn estimated from list prices start with `~`, for example `~$1.23`. A model without a known price shows tokens instead of dollars. See [where the numbers come from](how-it-works.md#where-the-numbers-come-from).
 
 Elsewhere in bb:
@@ -19,7 +21,7 @@ Elsewhere in bb:
 
 ## The Burn tab
 
-The Burn tab in the thread's side panel lists every prompt with its cost, and adds the cost of the thread's child threads. It also holds the thread's budget. With a discount set, a **With discounts · List price** switch at the top shows the same thread at list price, to compare.
+The Burn tab in the thread's side panel lists every prompt with its cost, and adds the cost of the thread's child threads. It also holds the thread's budget. Beside the totals, **Speed** gives the thread's output tokens per second over its timed calls, and each prompt's details and the models list give their own. With a discount set, a **With discounts · List price** switch at the top shows the same thread at list price, to compare.
 
 ![The Burn tab: totals, every prompt's cost, and the thread with its child](../assets/screenshots/bb-panel.png)
 
