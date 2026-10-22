@@ -1,16 +1,19 @@
 import type { ExperimentalHostRpcContext, ExperimentalHostWatchEvent, ExperimentalHostWatchSubscription } from "@get-bb/plugin-sdk";
 import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
 import { CHANGED_MAX, hostContract, hostSignals } from "./contract.js";
+import { createOpencodeDb, opencodeDbPath } from "./opencode-db.js";
 import { createPiSessions, sessionDir } from "./pi-sessions.js";
 
 type Context = ExperimentalHostRpcContext<typeof hostSignals>;
 
 /**
- * The Burn host entry: reads pi's session logs on the machine bb runs it on,
- * and signals the server as soon as one changes so the chip updates live.
+ * The Burn host entry: reads pi's session logs and opencode's database on the
+ * machine bb runs it on, and signals the server as soon as a pi log changes so
+ * the chip updates live.
  */
-export function createHostEntry(opts: { dir: string }) {
+export function createHostEntry(opts: { dir: string; opencodeDb?: string; opencodeModels?: string }) {
   const sessions = createPiSessions({ dir: opts.dir });
+  const opencode = createOpencodeDb({ path: opts.opencodeDb ?? opencodeDbPath(), modelsPath: opts.opencodeModels });
   let watch: Promise<ExperimentalHostWatchSubscription | null> | null = null;
 
   async function onEvent(event: ExperimentalHostWatchEvent, context: Context): Promise<void> {
@@ -49,12 +52,12 @@ export function createHostEntry(opts: { dir: string }) {
     contract: hostContract,
     experimental_signals: hostSignals,
     handlers: {
-      reports: async ({ threads, timeZone }, context) => {
-        await ensureWatch(context);
+      reports: async ({ harness, threads, timeZone }, context) => {
+        if (harness === "pi") await ensureWatch(context);
         const reports = [];
         for (const { threadId, sessionIds } of threads) {
           context.signal.throwIfAborted();
-          const got = await sessions.reportOf(sessionIds, timeZone);
+          const got = harness === "opencode" ? await opencode.reportOf(sessionIds, timeZone) : await sessions.reportOf(sessionIds, timeZone);
           reports.push({ threadId, report: got?.report ?? null, at: got?.at ?? null });
         }
         return { dir: opts.dir, reports };

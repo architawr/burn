@@ -85,7 +85,8 @@ export function createReportSource(bb: BbPluginApi, opts: { onChange(threadIds: 
     const before = heard.get(threadId) ?? 0;
     const thread = await bb.sdk.threads.get({ threadId });
     if ((heard.get(threadId) ?? 0) === before) remember(statuses, threadId, thread.status);
-    if (harnessOf(thread.providerId).reader !== "pi-log" || thread.environmentId === null) {
+    const reader = harnessOf(thread.providerId).reader;
+    if ((reader !== "pi-log" && reader !== "opencode-db") || thread.environmentId === null) {
       return { at: now(), hostId: null, providerId: thread.providerId, sessionIds: [], stems: new Set() };
     }
     const { hostId } = await bb.sdk.environments.get({ environmentId: thread.environmentId });
@@ -96,7 +97,9 @@ export function createReportSource(bb: BbPluginApi, opts: { onChange(threadIds: 
     });
     // The thread id too, for a session named after the thread rather than an identity.
     const sessionIds = [...new Set([...identities, threadId])].slice(-SESSIONS_MAX);
-    return { at: now(), hostId, providerId: thread.providerId, sessionIds, stems: new Set(sessionIds.map(sessionStem)) };
+    // Only pi's bridge names its session files after these ids.
+    const stems = reader === "pi-log" ? new Set(sessionIds.map(sessionStem)) : new Set<string>();
+    return { at: now(), hostId, providerId: thread.providerId, sessionIds, stems };
   }
 
   async function factsOf(threadId: string): Promise<Facts> {
@@ -143,7 +146,7 @@ export function createReportSource(bb: BbPluginApi, opts: { onChange(threadIds: 
     return null;
   }
 
-  async function ask(hostId: string, threadIds: string[], answers: Map<string, LogReport | null>): Promise<void> {
+  async function ask(hostId: string, harness: "pi" | "opencode", threadIds: string[], answers: Map<string, LogReport | null>): Promise<void> {
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     for (let start = 0; start < threadIds.length; start += HOST_BATCH) {
       const batch = threadIds.slice(start, start + HOST_BATCH);
@@ -153,12 +156,13 @@ export function createReportSource(bb: BbPluginApi, opts: { onChange(threadIds: 
       try {
         answer = await host.call(
           "reports",
-          { harness: "pi", timeZone, threads: batch.map((threadId) => ({ threadId, sessionIds: facts.get(threadId)?.sessionIds ?? [threadId] })) },
+          { harness, timeZone, threads: batch.map((threadId) => ({ threadId, sessionIds: facts.get(threadId)?.sessionIds ?? [threadId] })) },
           { hostId, timeoutMs: HOST_TIMEOUT_MS },
         );
       } catch (err) {
         failedAt.set(hostId, now());
-        bb.log.warn(`reading pi session logs on ${hostId} failed, so Burn shows the last figures it read there: ${message(err)}`);
+        const what = harness === "pi" ? "pi session logs" : "opencode's database";
+        bb.log.warn(`reading ${what} on ${hostId} failed, so Burn shows the last figures it read there: ${message(err)}`);
         return;
       }
       failedAt.delete(hostId);
@@ -193,13 +197,16 @@ export function createReportSource(bb: BbPluginApi, opts: { onChange(threadIds: 
   /** bb stores a turn's usage just before the thread goes idle, so a status change reads the thread's events again. */
   function heardStatus(thread: { id: string; status: string; providerId: string }): void {
     hear(thread);
-    if (harnessOf(thread.providerId).reader === "events") events.invalidate(thread.id);
+    const reader = harnessOf(thread.providerId).reader;
+    if (reader === "events") events.invalidate(thread.id);
+    // opencode records a call when it finishes, and Burn has no watch on its database.
+    else if (reader === "opencode-db") invalidate(thread.id);
     opts.onChange([thread.id]);
   }
 
   bb.events.on("thread.active", ({ thread }) => {
-    // A pi thread that just started may have a pi session bb had not named yet.
-    if (harnessOf(thread.providerId).reader === "pi-log") facts.delete(thread.id);
+    // A thread that just started may have a session bb had not named yet.
+    if (harnessOf(thread.providerId).reader !== "events") facts.delete(thread.id);
     heardStatus(thread);
   });
   for (const name of ["thread.idle", "thread.failed"] as const) bb.events.on(name, ({ thread }) => heardStatus(thread));
@@ -210,21 +217,26 @@ export function createReportSource(bb: BbPluginApi, opts: { onChange(threadIds: 
       const answers = new Map<string, LogReport | null>();
       const fromEvents = new Map<string, LogReport | null>();
       const eventReads: Promise<void>[] = [];
-      const wanted = new Map<string, string[]>();
+      const wanted = new Map<string, { hostId: string; harness: "pi" | "opencode"; threadIds: string[] }>();
       await Promise.all(
         ids.map(async (threadId) => {
           if (fresh(threadId)) return;
           const { hostId, providerId } = await factsOf(threadId);
-          if (providerId !== null && harnessOf(providerId).reader === "events") {
+          const reader = providerId === null ? null : harnessOf(providerId).reader;
+          if (providerId !== null && reader === "events") {
             const read = events.reportOf(threadId, providerId).then((got) => void fromEvents.set(threadId, got && { ...got, source: "events" }));
             eventReads.push(read);
             return;
           }
           if (hostId === null || hostDown(hostId)) return;
-          wanted.set(hostId, [...(wanted.get(hostId) ?? []), threadId]);
+          const harness = reader === "opencode-db" ? "opencode" : "pi";
+          const key = `${hostId}:${harness}`;
+          const group = wanted.get(key) ?? { hostId, harness, threadIds: [] };
+          group.threadIds.push(threadId);
+          wanted.set(key, group);
         }),
       );
-      await Promise.all([...[...wanted].map(([hostId, batch]) => ask(hostId, batch, answers)), ...eventReads]);
+      await Promise.all([...[...wanted.values()].map(({ hostId, harness, threadIds }) => ask(hostId, harness, threadIds, answers)), ...eventReads]);
       const out = new Map<string, LogReport>();
       for (const threadId of ids) {
         if (fromEvents.has(threadId)) {
