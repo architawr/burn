@@ -86,3 +86,37 @@ export function EyeOffIcon({ className }: { className?: string }): ReactNode {
     </Glyph>
   );
 }
+
+// After Lucide's calendar, chevron-left, chevron-right and chevron-down, for the Burn page's days.
+export function CalendarIcon({ className }: { className?: string }): ReactNode {
+  return (
+    <Glyph className={className}>
+      <rect x="3" y="4" width="18" height="18" rx="2" />
+      <path d="M16 2v4M8 2v4M3 10h18" />
+    </Glyph>
+  );
+}
+
+export function ChevronLeftIcon({ className }: { className?: string }): ReactNode {
+  return (
+    <Glyph className={className}>
+      <path d="m15 18-6-6 6-6" />
+    </Glyph>
+  );
+}
+
+export function ChevronRightIcon({ className }: { className?: string }): ReactNode {
+  return (
+    <Glyph className={className}>
+      <path d="m9 18 6-6-6-6" />
+    </Glyph>
+  );
+}
+
+export function ChevronDownIcon({ className }: { className?: string }): ReactNode {
+  return (
+    <Glyph className={className}>
+      <path d="m6 9 6 6 6-6" />
+    </Glyph>
+  );
+}

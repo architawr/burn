@@ -7,18 +7,25 @@ import { cn } from "../lib/utils.js";
 import type { SpendMetric, SpendOutput, SpendRange } from "./contract.js";
 import { dayDate } from "./days.js";
 import { PanelLabel } from "./panels.js";
+import { isLatest } from "./period.js";
 
 export const RANGES: { range: SpendRange; label: string; column: string; previous: string }[] = [
-  { range: "today", label: "Today", column: "Today", previous: "yesterday" },
+  { range: "today", label: "Day", column: "Today", previous: "yesterday" },
   { range: "7d", label: "7 days", column: "Last 7 days", previous: "previous 7 days" },
   { range: "30d", label: "30 days", column: "Last 30 days", previous: "previous 30 days" },
 ];
 export const rangeInfo = (range: SpendRange) => RANGES.find((r) => r.range === range) ?? (RANGES[1] as (typeof RANGES)[number]);
 
+type Covered = Pick<SpendOutput, "range" | "days" | "today">;
+
+/** What an answer's figures compare with: "yesterday", "the day before" a past day, or "previous 7 days". */
+export const previousOf = (data: Covered): string =>
+  data.range === "today" && !isLatest(data) ? "the day before" : rangeInfo(data.range).previous;
+
 /** "no spend in the previous 7 days", or "no use yesterday". */
-export const noneText = (what: string, range: SpendRange): string => {
-  const { previous } = rangeInfo(range);
-  return `${what} ${range === "today" ? previous : `in the ${previous}`}`;
+export const noneText = (what: string, data: Covered): string => {
+  const previous = previousOf(data);
+  return `${what} ${data.range === "today" ? previous : `in the ${previous}`}`;
 };
 
 export const METRIC_WORDS: Record<SpendMetric, string> = { cost: "cost", tokens: "tokens", calls: "calls" };
@@ -74,7 +81,7 @@ export function UsageCards({ data }: { data: SpendOutput }) {
       <Kpi
         label="Tokens"
         value={formatTokenCount(data.tokens)}
-        sub={<Change now={data.tokens} before={data.previousTokens} than={rangeInfo(data.range).previous} none={noneText("no use", data.range)} />}
+        sub={<Change now={data.tokens} before={data.previousTokens} than={previousOf(data)} none={noneText("no use", data)} />}
       />
       <Kpi label="Calls" value={count(data.calls)} sub={`${count(data.prompts)} ${data.prompts === 1 ? "prompt" : "prompts"}`} />
       <Kpi

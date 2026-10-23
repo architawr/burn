@@ -39,3 +39,15 @@
     animation: burn-pulse 1.6s ease-in-out infinite;
   }
 }
+
+/* The Burn page's date picker: Chromium opens its calendar only from this indicator, so it covers the whole input. */
+[data-burn-date]::-webkit-calendar-picker-indicator {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+  margin: 0;
+  padding: 0;
+  opacity: 0;
+  cursor: pointer;
+}

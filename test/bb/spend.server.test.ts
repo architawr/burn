@@ -1,6 +1,7 @@
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { reportKey, SPEND_PANELS_KEY } from "../../extensions/bb/keys.js";
+import { spendMethods } from "../../extensions/bb/spend/contract.js";
 import { dayDate, localDays } from "../../extensions/bb/spend/days.js";
 import { checkDailyBudget, createSpendHandlers, type SpendDeps } from "../../extensions/bb/spend/server.js";
 import { CALL_TIME_BUCKETS, dayKey, type DayRow, HOUR_MS, type UsageReport } from "../../src/report.js";
@@ -140,6 +141,42 @@ describe("spend", () => {
     expect(month.days[0]?.day).toBe(ago(29));
     expect(month.total).toBeCloseTo(17.5);
     expect(month.range).toBe("30d");
+  });
+
+  it("ends the range on an earlier day when asked, and names today", async () => {
+    const s = await setup({
+      reports: { thr_aaaaaa01: reportWith([day(14, 9), day(13, 1), day(7, 4), day(6, 0.5), day(3, 1), day(0, 2)]) },
+      threads: { thr_aaaaaa01: {} },
+    });
+    const earlier = await s.spend({ range: "7d", projectId: null, end: ago(7) });
+    expect(earlier.days.map((d) => d.day)).toEqual([13, 12, 11, 10, 9, 8, 7].map(ago));
+    expect(earlier.total).toBeCloseTo(5);
+    expect(earlier.previousTotal).toBeCloseTo(9);
+    expect(earlier.today).toBe(ago(0));
+
+    const oneDay = await s.spend({ range: "today", projectId: null, end: ago(3) });
+    expect(oneDay.days.map((d) => d.day)).toEqual([ago(3)]);
+    expect(oneDay.total).toBeCloseTo(1);
+
+    const later = await s.spend({ range: "7d", projectId: null, end: "2099-01-01" });
+    const latest = await s.spend({ range: "7d", projectId: null });
+    expect(later).toEqual(latest);
+    expect(latest.today).toBe(ago(0));
+  });
+
+  it("ends a UTC range on an earlier UTC day, and names today in UTC", async () => {
+    const s = await setup({ reports: { thr_aaaaaa01: reportWith([day(0, 2)]) }, threads: { thr_aaaaaa01: {} } });
+    const week = await s.spend({ range: "7d", projectId: null, tz: "utc", end: utcAgo(7) });
+    expect(week.days.map((d) => d.day)).toEqual(localDays(dayDate(utcAgo(7), "utc").getTime(), 7, 0, "utc"));
+    expect(week.days.at(-1)?.day).toBe(utcAgo(7));
+    expect(week.today).toBe(utcAgo(0));
+  });
+
+  it("takes only a real calendar day as the range's end", () => {
+    const input = spendMethods.spend.input;
+    expect(input.safeParse({ range: "7d", projectId: null, end: "2026-02-30" }).success).toBe(false);
+    expect(input.safeParse({ range: "7d", projectId: null, end: "2026-10-09" }).success).toBe(true);
+    expect(input.parse({ range: "7d", projectId: null }).end).toBeNull();
   });
 
   it("sums each day's models across threads and folds beyond four into Other", async () => {

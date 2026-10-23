@@ -278,7 +278,14 @@ function chartOf(sums: RangeSums, dayList: readonly string[], metric: SpendMetri
 const isPanel = (v: unknown): v is SpendPanel => typeof v === "string" && (SPEND_PANELS as readonly string[]).includes(v);
 
 export function createSpendHandlers(deps: SpendDeps): {
-  spend(input: { range: SpendRange; projectId: string | null; tz?: SpendZone; metric?: SpendMetric; listPrice?: boolean }): Promise<SpendOutput>;
+  spend(input: {
+    range: SpendRange;
+    projectId: string | null;
+    tz?: SpendZone;
+    metric?: SpendMetric;
+    listPrice?: boolean;
+    end?: string | null;
+  }): Promise<SpendOutput>;
   spendPanels(input: Record<string, never>): Promise<SpendPanels>;
   setSpendPanels(input: SpendPanels): Promise<SpendPanels>;
 } {
@@ -330,12 +337,13 @@ export function createSpendHandlers(deps: SpendDeps): {
   }
 
   return {
-    async spend({ range, projectId, tz = "local", metric = "cost", listPrice = false }) {
-      const today = now();
+    async spend({ range, projectId, tz = "local", metric = "cost", listPrice = false, end = null }) {
+      const today = localDays(now(), 1, 0, tz)[0] as string;
+      const at = dayDate(end !== null && end < today ? end : today, tz).getTime();
       const length = RANGE_DAYS[range];
-      const dayList = localDays(today, length, 0, tz);
+      const dayList = localDays(at, length, 0, tz);
       const inRange: ReadonlySet<string> = new Set(dayList);
-      const before = new Set(localDays(today, length, length, tz));
+      const before = new Set(localDays(at, length, length, tz));
 
       // A day of slack: the range and the period before it, whatever daylight saving does.
       const since = dayDate(dayList[0] as string, tz).getTime() - (length + 1) * DAY_MS;
@@ -431,6 +439,7 @@ export function createSpendHandlers(deps: SpendDeps): {
         range,
         tz,
         metric,
+        today,
         days,
         total: totals.cost,
         previousTotal,

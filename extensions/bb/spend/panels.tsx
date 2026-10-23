@@ -78,8 +78,10 @@ export function usePanels(): Panels {
   };
 }
 
-/** The toolbar's menu of panels, each with a switch. */
-export function PanelsMenu({ panels }: { panels: Panels }): ReactNode {
+const HEADING = "px-2 pt-1.5 pb-1 text-[10.5px] font-semibold tracking-wide text-muted-foreground uppercase";
+
+/** The toolbar's View menu: which calendar days count, above a switch for each panel. */
+export function ViewMenu({ panels, days }: { panels: Panels; days: ReactNode }): ReactNode {
   const count = panels.hidden.size;
   return (
     <Popover>
@@ -88,12 +90,12 @@ export function PanelsMenu({ panels }: { panels: Panels }): ReactNode {
           type="button"
           // Until the stored choice loads, a change here could be overwritten by it.
           disabled={!panels.ready}
-          aria-label={count > 0 ? `Panels, ${count} hidden` : "Panels"}
-          title="Choose which panels show"
+          aria-label={count > 0 ? `View, ${count} hidden` : "View"}
+          title="Days and panels"
           className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background px-2 text-xs text-foreground hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-50 data-[state=open]:bg-state-hover"
         >
           <SlidersIcon className="size-3.5 text-muted-foreground" />
-          Panels
+          View
           {count > 0 ? (
             <span aria-hidden className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-muted-foreground px-1 text-[10px] font-semibold text-background tabular-nums">
               {count}
@@ -101,8 +103,13 @@ export function PanelsMenu({ panels }: { panels: Panels }): ReactNode {
           ) : null}
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-72 p-1.5 text-xs" aria-label="Panels">
-        <div className="px-2 pt-1.5 pb-1 text-[10.5px] font-semibold tracking-wide text-muted-foreground uppercase">Show on this page</div>
+      <PopoverContent align="end" className="w-72 p-1.5 text-xs" aria-label="View">
+        <div className={HEADING}>Days</div>
+        <div className="px-2 pb-2">
+          {days}
+          <p className="mt-1.5 text-[11px] text-muted-foreground">Local is the bb machine's day. UTC is the day Shopify's AI proxy counts.</p>
+        </div>
+        <div className={HEADING}>Show on this page</div>
         {PANELS.map((p) => (
           <label key={p.id} className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-state-hover">
             <span className="min-w-0 flex-1">

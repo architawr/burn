@@ -9,12 +9,15 @@ import {
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { budgetState } from "../../../src/budget.js";
 import { formatAmount, formatBudget, formatTokenCount, formatUsd, modelName } from "../../../src/format.js";
+import { CalendarIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon } from "../icon.js";
 import { cn } from "../lib/utils.js";
 import { readPrefs } from "../prefs.js";
 import type { SpendMetric, SpendOutput, SpendPanel, SpendRange, SpendZone, spendMethods } from "./contract.js";
 import { dayDate, RANGE_DAYS } from "./days.js";
-import { HideButton, PANELS, PanelLabel, type Panels, PanelsMenu, usePanels } from "./panels.js";
-import { Activity, CallTime, Change, formatMetric, Kpi, METRIC_WORDS, ModelTable, noneText, RANGES, rangeInfo, TokenMix, UsageCards } from "./usage.js";
+import { FIRST_DAY, isDay, isLatest, type Period, parsePeriod, periodEnding, periodLabel, periodPath, stepPeriod } from "./period.js";
+import { HideButton, PANELS, PanelLabel, type Panels, usePanels, ViewMenu } from "./panels.js";
+import { Activity, CallTime, Change, formatMetric, Kpi, METRIC_WORDS, ModelTable, noneText, previousOf, RANGES, rangeInfo, TokenMix, UsageCards } from "./usage.js";
+import { loadView, type Prices, type SavedView, saveView } from "./view.js";
 
 /** A usage signal arrives per report from every running thread, so refetches wait for a quiet moment. */
 export const REFETCH_DEBOUNCE_MS = 1000;
@@ -29,25 +32,6 @@ const ZONES: { zone: SpendZone; label: string }[] = [
   { zone: "local", label: "Local" },
   { zone: "utc", label: "UTC" },
 ];
-const ZONE_KEY = "burn.spend.tz";
-
-function savedZone(): SpendZone {
-  try {
-    return localStorage.getItem(ZONE_KEY) === "utc" ? "utc" : "local";
-  } catch {
-    // Storage is blocked in some sandboxed frames; local days are the default anyway.
-    return "local";
-  }
-}
-
-function saveZone(zone: SpendZone): void {
-  try {
-    localStorage.setItem(ZONE_KEY, zone);
-  } catch (cause) {
-    console.warn(`Burn: remembering the ${zone} day choice failed: ${errorText(cause)}`);
-  }
-}
-
 const zoneSuffix = (zone: SpendZone): string => (zone === "utc" ? " (UTC)" : "");
 
 /** bb's categorical chart series, each falling back to a host token where a theme does not define it. */
@@ -75,7 +59,14 @@ interface SpendState {
 }
 
 /** Spend for the range, project and days, refetched (debounced) on every usage signal and after a reconnect. */
-function useSpend(range: SpendRange, projectId: string | null, tz: SpendZone, metric: SpendMetric, listPrice: boolean): SpendState & { retry: () => void } {
+function useSpend(
+  range: SpendRange,
+  end: string | null,
+  projectId: string | null,
+  tz: SpendZone,
+  metric: SpendMetric,
+  listPrice: boolean,
+): SpendState & { retry: () => void } {
   const rpc = useRpc<typeof spendMethods>();
   const connection = useRealtimeConnectionState();
   const [state, setState] = useState<SpendState>({ data: null, error: null, loading: true });
@@ -86,7 +77,7 @@ function useSpend(range: SpendRange, projectId: string | null, tz: SpendZone, me
   const refetch = useCallback(() => {
     const asked = ++latest.current;
     setState((s) => ({ ...s, loading: true }));
-    rpc.call("spend", listPrice ? { range, projectId, tz, metric, listPrice: true } : { range, projectId, tz, metric }).then(
+    rpc.call("spend", { range, projectId, tz, metric, ...(listPrice ? { listPrice: true } : {}), ...(end !== null ? { end } : {}) }).then(
       (data) => {
         if (asked === latest.current) setState({ data, error: null, loading: false });
       },
@@ -94,7 +85,7 @@ function useSpend(range: SpendRange, projectId: string | null, tz: SpendZone, me
         if (asked === latest.current) setState((s) => ({ ...s, error: errorText(cause), loading: false }));
       },
     );
-  }, [rpc, range, projectId, tz, metric, listPrice]);
+  }, [rpc, range, end, projectId, tz, metric, listPrice]);
   // A debounced refetch fires after the choice it was scheduled under may have changed, so it reads the current one.
   const current = useRef(refetch);
   useLayoutEffect(() => {
@@ -159,14 +150,79 @@ function Segments<T extends string>({
   );
 }
 
-type Prices = "discounted" | "list";
-
 const PRICES: { value: Prices; label: string }[] = [
   { value: "discounted", label: "With discounts" },
   { value: "list", label: "List price" },
 ];
 
+const TOOL_BUTTON =
+  "inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background px-2 text-xs text-foreground hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-50";
+
+/**
+ * Today, a step back and forward by one range, and the days shown. `today`
+ * is the server's, in the chosen zone; until the first answer brings it, the
+ * buttons are disabled and the days are not named.
+ */
+function PeriodNav({ period, today, onGo }: { period: Period; today: string | null; onGo: (next: Period) => void }) {
+  const latest = period.end === null;
+  const unit = period.range === "today" ? "day" : `${RANGE_DAYS[period.range]} days`;
+  const step = (by: -1 | 1) => () => {
+    if (today !== null) onGo(stepPeriod(period, by, today));
+  };
+  return (
+    <>
+      <button type="button" title={`Back to the newest ${unit}`} disabled={today === null || latest} onClick={() => onGo({ range: period.range, end: null })} className={TOOL_BUTTON}>
+        Today
+      </button>
+      <button type="button" aria-label="Earlier" title={`The ${unit} before`} disabled={today === null} onClick={step(-1)} className={cn(TOOL_BUTTON, "w-7 justify-center px-0")}>
+        <ChevronLeftIcon className="size-3.5" />
+      </button>
+      <button type="button" aria-label="Later" title={`The ${unit} after`} disabled={today === null || latest} onClick={step(1)} className={cn(TOOL_BUTTON, "w-7 justify-center px-0")}>
+        <ChevronRightIcon className="size-3.5" />
+      </button>
+      {today !== null ? <DatePicker period={period} today={today} onGo={onGo} /> : null}
+    </>
+  );
+}
+
+/** The days shown, over the browser's own date picker, which opens from a click anywhere on them. */
+function DatePicker({ period, today, onGo }: { period: Period; today: string; onGo: (next: Period) => void }) {
+  return (
+    <span className="relative inline-flex h-7 items-center gap-1.5 rounded-md px-1.5 hover:bg-state-hover focus-within:ring-1 focus-within:ring-ring">
+      <CalendarIcon className="size-3.5 text-muted-foreground" />
+      <span data-testid="period" className="text-base font-semibold whitespace-nowrap">
+        {periodLabel(period.range, period.end ?? today, today)}
+      </span>
+      <ChevronDownIcon className="size-3.5 text-muted-foreground" />
+      <input
+        type="date"
+        data-burn-date=""
+        aria-label="Pick a date"
+        title="Pick a date"
+        value={period.end ?? today}
+        min={FIRST_DAY}
+        max={today}
+        onClick={(e) => {
+          try {
+            e.currentTarget.showPicker();
+          } catch {
+            // Without showPicker, or where it is refused, the click still reaches the browser's own picker.
+          }
+        }}
+        // Typing a year digit by digit passes through years such as 0002, which open nothing.
+        onChange={(e) => {
+          const day = e.target.value;
+          if (isDay(day) && day <= today) onGo(periodEnding(period.range, day, today));
+        }}
+        className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+      />
+    </span>
+  );
+}
+
+/** Two rows: which days the page shows, then what it measures and for which project. */
 function Toolbar({
+  nav,
   metric,
   onMetric,
   range,
@@ -178,6 +234,8 @@ function Toolbar({
   options,
   panels,
 }: {
+  /** The controls that move through the days, before the range. */
+  nav: ReactNode;
   metric: SpendMetric;
   onMetric: (metric: SpendMetric) => void;
   range: SpendRange;
@@ -190,33 +248,42 @@ function Toolbar({
   panels: Panels;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <span className="text-xs text-muted-foreground">Show</span>
-      <Segments label="Show" items={METRICS.map((m) => ({ value: m.metric, label: m.label }))} value={metric} onChange={onMetric} />
-      <span className="flex-1" />
-      <PanelsMenu panels={panels} />
-      <select
-        aria-label="Project"
-        value={projectId ?? ""}
-        onChange={(e) => onProject(e.target.value === "" ? null : e.target.value)}
-        className="h-7 max-w-[14rem] truncate rounded-md border border-border bg-background px-2 text-xs text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-      >
-        <option value="">All projects</option>
-        {options.map((p) => (
-          <option key={p.projectId} value={p.projectId}>
-            {p.name}
-          </option>
-        ))}
-      </select>
-      <Segments label="Days" items={ZONES.map((z) => ({ value: z.zone, label: z.label }))} value={zone} onChange={onZone} />
-      <Segments label="Range" items={RANGES.map((r) => ({ value: r.range, label: r.label }))} value={range} onChange={onRange} />
+    <div className="space-y-2.5">
+      <div className="flex flex-wrap items-center gap-2">
+        {nav}
+        <span className="flex-1" />
+        <Segments label="Range" items={RANGES.map((r) => ({ value: r.range, label: r.label }))} value={range} onChange={onRange} />
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-muted-foreground">Show</span>
+        <Segments label="Show" items={METRICS.map((m) => ({ value: m.metric, label: m.label }))} value={metric} onChange={onMetric} />
+        <span className="flex-1" />
+        {/* Together, so a narrow page wraps them as a pair rather than leaving View alone on a line. */}
+        <div className="flex min-w-0 items-center gap-2">
+          <select
+            aria-label="Project"
+            value={projectId ?? ""}
+            onChange={(e) => onProject(e.target.value === "" ? null : e.target.value)}
+            className="h-7 max-w-[14rem] min-w-0 truncate rounded-md border border-border bg-background px-2 text-xs text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <option value="">All projects</option>
+            {options.map((p) => (
+              <option key={p.projectId} value={p.projectId}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+          <ViewMenu panels={panels} days={<Segments label="Days" items={ZONES.map((z) => ({ value: z.zone, label: z.label }))} value={zone} onChange={onZone} />} />
+        </div>
+      </div>
     </div>
   );
 }
 
 function Kpis({ data }: { data: SpendOutput }) {
   const threads = [
-    data.runningCount > 0 ? `${data.runningCount} running` : null,
+    // Running is about now, so a past period leaves it out.
+    data.runningCount > 0 && isLatest(data) ? `${data.runningCount} running` : null,
     data.listPrice ? "at list price" : data.overBudgetCount > 0 ? `${data.overBudgetCount} over budget` : "none over budget",
   ].filter((s): s is string => s !== null);
   return (
@@ -224,7 +291,7 @@ function Kpis({ data }: { data: SpendOutput }) {
       <Kpi
         label={`Spent${zoneSuffix(data.tz)}`}
         value={formatAmount(data.total, data.estimated)}
-        sub={<Change now={data.total} before={data.previousTotal} than={rangeInfo(data.range).previous} none={noneText("no spend", data.range)} />}
+        sub={<Change now={data.total} before={data.previousTotal} than={previousOf(data)} none={noneText("no spend", data)} />}
       />
       <Kpi label="Threads" value={String(data.threadCount)} sub={threads.join(" · ")} />
       <Kpi
@@ -312,13 +379,14 @@ function DayTip({ day, data, index, count }: { day: SpendOutput["days"][number];
           <span>{day.calls.toLocaleString("en-US")}</span>
         </div>
       ) : null}
+      <div className="mt-1 text-[11px] text-muted-foreground">Click to open this day</div>
     </div>
   );
 }
 
 const LIST_LABELS: Record<SpendMetric, string> = { cost: "Spend per day", tokens: "Tokens per day", calls: "Calls per day" };
 
-function DayChart({ data }: { data: SpendOutput }) {
+function DayChart({ data, onOpenDay }: { data: SpendOutput; onOpenDay: (day: string) => void }) {
   const { days, models, range, metric } = data;
   const dailyBudget = metric === "cost" ? data.dailyBudget : null;
   const [hover, setHover] = useState<number | null>(null);
@@ -346,25 +414,28 @@ function DayChart({ data }: { data: SpendOutput }) {
             <div
               key={d.day}
               role="listitem"
-              tabIndex={0}
               aria-label={`${longDay(d.day)}: ${valueOf(d, data)}`}
               onMouseEnter={() => setHover(i)}
-              onFocus={() => setHover(i)}
-              onBlur={() => setHover(null)}
-              className={cn(
-                "flex h-full min-w-0 flex-1 justify-center rounded-sm transition-opacity focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                hover !== null && hover !== i && "opacity-45",
-              )}
+              className={cn("flex h-full min-w-0 flex-1 transition-opacity", hover !== null && hover !== i && "opacity-45")}
             >
-              <div className="flex h-full w-[56%] max-w-10 flex-col-reverse gap-px">
-                {d.models.map((m) => (
-                  <div
-                    key={m.key}
-                    className="w-full shrink-0 rounded-[2px] bg-current"
-                    style={{ ...chartColor(models.findIndex((x) => x.key === m.key)), height: `${pct(m[metric])}%` }}
-                  />
-                ))}
-              </div>
+              <button
+                type="button"
+                aria-label={`Open ${longDay(d.day)}`}
+                onClick={() => onOpenDay(d.day)}
+                onFocus={() => setHover(i)}
+                onBlur={() => setHover(null)}
+                className="flex h-full w-full cursor-pointer justify-center rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <div className="flex h-full w-[56%] max-w-10 flex-col-reverse gap-px">
+                  {d.models.map((m) => (
+                    <div
+                      key={m.key}
+                      className="w-full shrink-0 rounded-[2px] bg-current"
+                      style={{ ...chartColor(models.findIndex((x) => x.key === m.key)), height: `${pct(m[metric])}%` }}
+                    />
+                  ))}
+                </div>
+              </button>
             </div>
           ))}
         </div>
@@ -387,16 +458,18 @@ function TodayBar({ data }: { data: SpendOutput }) {
   const dailyBudget = metric === "cost" ? data.dailyBudget : null;
   const total = metric === "cost" ? data.total : data[metric];
   const label = formatMetric(total, metric, data.estimated);
+  const day = data.days[0]?.day ?? data.today;
+  const latest = isLatest(data);
   // Headroom past the larger of the two, so the budget mark never sits on the bar's rounded end.
   const span = Math.max(total, dailyBudget ?? 0) * 1.08 || 1;
   return (
     <div className="space-y-2">
       <div className="text-xs text-muted-foreground tabular-nums">
-        <span className="text-sm font-semibold text-foreground">{label}</span> today
+        <span className="text-sm font-semibold text-foreground">{label}</span> {latest ? "today" : `on ${longDay(day)}`}
         {dailyBudget !== null ? ` of the ${formatBudget(dailyBudget)} daily budget` : ""}
       </div>
       <div className="relative">
-        <div className="flex h-3 gap-px overflow-hidden rounded-full bg-muted" role="img" aria-label={`Today by model: ${label}`}>
+        <div className="flex h-3 gap-px overflow-hidden rounded-full bg-muted" role="img" aria-label={`${latest ? "Today" : longDay(day)} by model: ${label}`}>
           {models.map((m, i) => (
             <div key={m.key} className="h-full bg-current" style={{ ...chartColor(i), width: `${(m[metric] / span) * 100}%` }} />
           ))}
@@ -432,7 +505,7 @@ function ThreadTable({ data, hide }: { data: SpendOutput; hide: ReactNode }) {
               Tokens
             </th>
             <th scope="col" className="px-2 py-2 text-right font-medium whitespace-nowrap">
-              {rangeInfo(data.range).column}
+              {isLatest(data) ? rangeInfo(data.range).column : periodLabel(data.range, data.days.at(-1)?.day ?? data.today, data.today)}
             </th>
             <th scope="col" className="px-2 py-2 text-right font-medium">
               Total
@@ -552,9 +625,11 @@ function Dashboard({
   panels,
   prices,
   onPrices,
+  onOpenDay,
 }: {
   data: SpendOutput;
   panels: Panels;
+  onOpenDay: (day: string) => void;
   /** null while no discount is set, so there is nothing to switch. */
   prices: Prices | null;
   onPrices: (prices: Prices) => void;
@@ -563,7 +638,7 @@ function Dashboard({
   const shown = (id: SpendPanel, panel: () => ReactNode, className?: string): ReactNode =>
     panels.shown(id) ? <div className={cn("group min-w-0", className)}>{panel()}</div> : null;
   const hide = (id: SpendPanel): ReactNode => <HideButton id={id} panels={panels} />;
-  const title = data.range === "today" ? "Today" : "Per day";
+  const title = data.range !== "today" ? "Per day" : isLatest(data) ? "Today" : longDay(data.days[0]?.day ?? data.today);
   const allHidden = PANELS.every((p) => !panels.shown(p.id));
   return (
     <>
@@ -587,7 +662,7 @@ function Dashboard({
             {metric === "cost" ? "" : ` · ${METRIC_WORDS[metric]}`}
             {zoneSuffix(data.tz)}
           </PanelLabel>
-          {data.range === "today" ? <TodayBar data={data} /> : <DayChart data={data} />}
+          {data.range === "today" ? <TodayBar data={data} /> : <DayChart data={data} onOpenDay={onOpenDay} />}
         </section>
       ))}
       <Pair left={shown("mix", () => <TokenMix data={data} hide={hide("mix")} />, CARD)} right={shown("time", () => <CallTime data={data} hide={hide("time")} />, CARD)} />
@@ -647,20 +722,38 @@ function Notice({ role, children }: { role: "status" | "alert"; children: ReactN
 
 /** The Burn page: what every thread has spent and used, by day, hour, thread, model, project and harness. */
 export function SpendPage({ subPath }: PluginNavPanelProps): ReactNode {
-  const [range, setRange] = useState<SpendRange>(() =>
-    Object.hasOwn(RANGE_DAYS, subPath) ? (subPath as SpendRange) : "7d",
-  );
-  const [projectId, setProjectId] = useState<string | null>(null);
-  const [metric, setMetric] = useState<SpendMetric>("cost");
-  const [zone, setZone] = useState<SpendZone>(savedZone);
-  const chooseZone = useCallback((next: SpendZone) => {
-    setZone(next);
-    saveZone(next);
-  }, []);
+  const [view, setView] = useState<SavedView>(loadView);
+  const remember = (patch: Partial<SavedView>): void => {
+    const next = { ...view, ...patch };
+    setView(next);
+    saveView(next);
+  };
+  const { metric, projectId, tz: zone, prices } = view;
+  // bb re-renders the page with the new address on navigation, so the days shown are read from it, never copied into state.
+  const asked = parsePeriod(subPath) ?? { range: view.range, end: null };
+  const { range } = asked;
   const { discounted } = readPrefs(useSettings().values);
-  const [prices, setPrices] = useState<Prices>("discounted");
-  const { data, error, loading, retry } = useSpend(range, projectId, zone, metric, discounted && prices === "list");
+  const { data, error, loading, retry } = useSpend(range, asked.end, projectId, zone, metric, discounted && prices === "list");
   const panels = usePanels();
+  const today = data?.today ?? null;
+  // A last day of today or later, as an old link can hold, is the newest period.
+  const period: Period = asked.end !== null && today !== null && asked.end >= today ? { range, end: null } : asked;
+  const navigate = useBbNavigate();
+  const go = (next: Period, replace = false): void =>
+    navigate.toPluginPanel("spend", replace ? { subPath: periodPath(next), replace: true } : { subPath: periodPath(next) });
+  const chooseRange = (next: SpendRange): void => {
+    remember({ range: next });
+    // The bare address shows the remembered range, so a pushed entry would leave a back step that shows the new range again.
+    go({ range: next, end: period.end }, subPath === "");
+  };
+
+  // Once, against the first answer: checking every answer would drop a project on a range without its threads.
+  const projectChecked = useRef(false);
+  useEffect(() => {
+    if (data === null || projectChecked.current) return;
+    projectChecked.current = true;
+    if (projectId !== null && !data.projectOptions.some((p) => p.projectId === projectId)) remember({ projectId: null });
+  });
 
   let body: ReactNode;
   if (data === null && error !== null) {
@@ -684,7 +777,13 @@ export function SpendPage({ subPath }: PluginNavPanelProps): ReactNode {
             Could not refresh: {error}
           </div>
         ) : null}
-        <Dashboard data={data} panels={panels} prices={discounted ? prices : null} onPrices={setPrices} />
+        <Dashboard
+          data={data}
+          panels={panels}
+          prices={discounted ? prices : null}
+          onPrices={(next) => remember({ prices: next })}
+          onOpenDay={(day) => go(periodEnding("today", day, data.today))}
+        />
       </>
     );
   }
@@ -693,14 +792,15 @@ export function SpendPage({ subPath }: PluginNavPanelProps): ReactNode {
     <div className="h-full overflow-y-auto p-4 md:p-5">
       <div className={cn("mx-auto w-full max-w-4xl space-y-5 text-foreground", loading && data !== null && "opacity-70")} aria-busy={loading}>
         <Toolbar
+          nav={<PeriodNav period={period} today={today} onGo={go} />}
           metric={metric}
-          onMetric={setMetric}
+          onMetric={(next) => remember({ metric: next })}
           range={range}
-          onRange={setRange}
+          onRange={chooseRange}
           zone={zone}
-          onZone={chooseZone}
+          onZone={(next) => remember({ tz: next })}
           projectId={projectId}
-          onProject={setProjectId}
+          onProject={(next) => remember({ projectId: next })}
           options={data?.projectOptions ?? []}
           panels={panels}
         />

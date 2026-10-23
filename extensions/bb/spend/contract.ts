@@ -24,6 +24,8 @@ export const spendOutputSchema = z.object({
   range: z.enum(SPEND_RANGES),
   tz: z.enum(SPEND_ZONES),
   metric: z.enum(SPEND_METRICS),
+  /** Today in `tz`, YYYY-MM-DD: the latest day a range can end on. */
+  today: z.string(),
   /** Days covered in `tz`, oldest first, YYYY-MM-DD; `models` are the chart's, folded as `models` below. */
   days: z.array(z.object({ day: z.string(), ...usage, models: z.array(z.object({ key: z.string(), ...usage })) })),
   total: amount,
@@ -112,6 +114,8 @@ export const spendMethods = {
       metric: z.enum(SPEND_METRICS).default("cost"),
       /** Answer at list price, without Burn's discount settings. */
       listPrice: z.boolean().default(false),
+      /** The range's last day in `tz`; null, or a day after today, ends it today. */
+      end: z.iso.date().nullable().default(null),
     }),
     output: spendOutputSchema,
   },

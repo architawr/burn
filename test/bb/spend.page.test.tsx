@@ -3,9 +3,10 @@ import { type RenderedSlot, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { act, fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { SPEND_PANELS, type SpendMetric, type SpendOutput, type SpendPanel, type SpendRange, type SpendZone, type spendMethods } from "../../extensions/bb/spend/contract.js";
-import { localDays } from "../../extensions/bb/spend/days.js";
+import { dayDate, localDays } from "../../extensions/bb/spend/days.js";
 import { REFETCH_DEBOUNCE_MS, SpendPage } from "../../extensions/bb/spend/page.js";
 import { PANELS } from "../../extensions/bb/spend/panels.js";
+import { loadView, VIEW_KEY } from "../../extensions/bb/spend/view.js";
 
 const slots: RenderedSlot[] = [];
 afterEach(() => {
@@ -15,10 +16,12 @@ afterEach(() => {
 
 const NOW = new Date(2026, 9, 18, 15).getTime();
 
-function output(range: SpendRange = "7d", over: Partial<SpendOutput> = {}): SpendOutput {
+/** The page's answer for `range`, its days ending on `end` when given. */
+function output(range: SpendRange = "7d", over: Partial<SpendOutput> = {}, end?: string): SpendOutput {
   const count = range === "today" ? 1 : range === "7d" ? 7 : 30;
   const last = (i: number) => i === count - 1;
-  const days = localDays(NOW, count).map((day, i) => ({
+  const lastDay = end === undefined ? NOW : dayDate(end).getTime();
+  const days = localDays(lastDay, count).map((day, i) => ({
     day,
     cost: last(i) ? 23.6 : 10,
     tokens: last(i) ? 52_000_000 : 20_000_000,
@@ -28,11 +31,12 @@ function output(range: SpendRange = "7d", over: Partial<SpendOutput> = {}): Spen
       { key: "anthropic/claude-sonnet-4-5", cost: last(i) ? 7.8 : 3, tokens: last(i) ? 22_000_000 : 6_000_000, calls: last(i) ? 210 : 50 },
     ],
   }));
-  const activity = localDays(NOW, count).map((day, i) => ({ day, hours: Array.from({ length: 24 }, (_, h) => (last(i) && h === 11 ? 35.89 : h === 9 ? 2 : 0)) }));
+  const activity = localDays(lastDay, count).map((day, i) => ({ day, hours: Array.from({ length: 24 }, (_, h) => (last(i) && h === 11 ? 35.89 : h === 9 ? 2 : 0)) }));
   return {
     range,
     tz: "local",
     metric: "cost",
+    today: localDays(NOW, 1)[0] as string,
     days,
     total: 97.4,
     previousTotal: 82.54,
@@ -149,7 +153,7 @@ function output(range: SpendRange = "7d", over: Partial<SpendOutput> = {}): Spen
   };
 }
 
-type Input = { range: SpendRange; projectId: string | null; tz?: SpendZone; metric?: SpendMetric; listPrice?: boolean };
+type Input = { range: SpendRange; projectId: string | null; tz?: SpendZone; metric?: SpendMetric; listPrice?: boolean; end?: string | null };
 
 /** The spend rpc answered by `answer`, and the hidden panels kept in memory as the plugin keeps them. */
 function backend(answer: (input: Input) => SpendOutput | Promise<SpendOutput>, hidden: SpendPanel[] = []) {
@@ -294,7 +298,7 @@ describe("Spend page", () => {
     fireEvent.change(slot.getByRole("combobox", { name: "Project" }), { target: { value: "proj_c" } });
     await waitFor(() => expect(server.inputs.at(-1)).toEqual({ range: "30d", projectId: "proj_c", tz: "local", metric: "cost" }));
 
-    fireEvent.click(slot.getByRole("button", { name: "Today" }));
+    fireEvent.click(slot.getByRole("button", { name: "Day" }));
     expect(await slot.findByRole("img", { name: "Today by model: $97.40" })).toBeTruthy();
     expect(server.inputs.at(-1)).toEqual({ range: "today", projectId: "proj_c", tz: "local", metric: "cost" });
     expect(server.inputs[0]).toEqual({ range: "7d", projectId: null, tz: "local", metric: "cost" });
@@ -310,7 +314,10 @@ describe("Spend page", () => {
     const server = backend((input) => output(input.range, { tz: input.tz ?? "local" }));
     const slot = render(server);
     await slot.findByText("$97.40");
-    const group = within(slot.getByRole("group", { name: "Days" }));
+    // Local and UTC sit in the View menu, which renders nothing while closed.
+    expect(slot.queryByRole("group", { name: "Days" })).toBeNull();
+    fireEvent.click(slot.getByRole("button", { name: "View" }));
+    const group = within(within(await slot.findByRole("dialog")).getByRole("group", { name: "Days" }));
     expect(group.getByRole("button", { name: "Local" }).getAttribute("aria-pressed")).toBe("true");
     expect(slot.queryByText(/\(UTC\)/)).toBeNull();
 
@@ -319,12 +326,152 @@ describe("Spend page", () => {
     expect(await slot.findByText("Spent (UTC)")).toBeTruthy();
     expect(slot.getByText("Per day (UTC)")).toBeTruthy();
     expect(group.getByRole("button", { name: "UTC" }).getAttribute("aria-pressed")).toBe("true");
-    expect(localStorage.getItem("burn.spend.tz")).toBe("utc");
+    expect(JSON.parse(localStorage.getItem(VIEW_KEY) ?? "{}").tz).toBe("utc");
 
     slot.lifecycle.unmount();
     const again = backend((input) => output(input.range, { tz: input.tz ?? "local" }));
     render(again);
     await waitFor(() => expect(again.inputs[0]).toEqual({ range: "7d", projectId: null, tz: "utc", metric: "cost" }));
+  });
+
+  it("steps back and forward by one range, and back to today, through the page address", async () => {
+    const server = backend((input) => output(input.range, {}, input.end ?? undefined));
+    const slot = render(server, "7d/2026-10-08");
+    await slot.findByText("$97.40");
+    expect(server.inputs[0]).toEqual({ range: "7d", projectId: null, tz: "local", metric: "cost", end: "2026-10-08" });
+    expect(slot.getByTestId("period").textContent).toBe("Oct 2 – 8");
+    const went = () => slot.inspection.navigateCalls.at(-1);
+    const to = (subPath: string) => ({ method: "toPluginPanel", path: "spend", options: { subPath } });
+
+    fireEvent.click(slot.getByRole("button", { name: "Earlier" }));
+    expect(went()).toEqual(to("7d/2026-10-01"));
+    fireEvent.click(slot.getByRole("button", { name: "Later" }));
+    expect(went()).toEqual(to("7d/2026-10-15"));
+    fireEvent.click(slot.getByRole("button", { name: "Today" }));
+    expect(went()).toEqual(to("7d"));
+    fireEvent.click(slot.getByRole("button", { name: "30 days" }));
+    expect(went()).toEqual(to("30d/2026-10-08"));
+
+    slot.lifecycle.rerender(<SpendPage subPath="7d/2026-10-15" />);
+    await waitFor(() => expect(server.inputs.at(-1)).toMatchObject({ end: "2026-10-15" }));
+    await waitFor(() => expect(slot.getByTestId("period").textContent).toBe("Oct 9 – 15"));
+    fireEvent.click(slot.getByRole("button", { name: "Later" }));
+    expect(went()).toEqual(to("7d"));
+  });
+
+  it("stops at the newest days, and replaces the bare address on a range click", async () => {
+    const server = backend((input) => output(input.range));
+    const slot = render(server);
+    await slot.findByText("$97.40");
+    expect(slot.getByTestId("period").textContent).toBe("Oct 12 – 18");
+    expect((slot.getByRole("button", { name: "Later" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((slot.getByRole("button", { name: "Today" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(slot.getByRole("button", { name: "Earlier" }));
+    expect(slot.inspection.navigateCalls.at(-1)).toEqual({ method: "toPluginPanel", path: "spend", options: { subPath: "7d/2026-10-11" } });
+    fireEvent.click(slot.getByRole("button", { name: "30 days" }));
+    expect(slot.inspection.navigateCalls.at(-1)).toEqual({ method: "toPluginPanel", path: "spend", options: { subPath: "30d", replace: true } });
+  });
+
+  it("opens the range that ends on the date picked, and ignores a date outside the days Burn shows", async () => {
+    const newest = render(backend((input) => output(input.range)));
+    await newest.findByText("$97.40");
+    const atNewest = newest.getByLabelText("Pick a date") as HTMLInputElement;
+    expect(atNewest.type).toBe("date");
+    expect(atNewest.max).toBe("2026-10-18");
+    expect(atNewest.value).toBe("2026-10-18");
+    newest.lifecycle.unmount();
+
+    // React reports no change to the value the input already holds, so this starts from a past period.
+    const slot = render(backend((input) => output(input.range, {}, input.end ?? undefined)), "7d/2026-10-08");
+    await slot.findByText("$97.40");
+    const input = slot.getByLabelText("Pick a date") as HTMLInputElement;
+    expect(input.value).toBe("2026-10-08");
+    fireEvent.click(input);
+    const went = () => slot.inspection.navigateCalls.filter((c) => c.method === "toPluginPanel");
+    fireEvent.change(input, { target: { value: "2026-09-14" } });
+    expect(went().at(-1)).toEqual({ method: "toPluginPanel", path: "spend", options: { subPath: "7d/2026-09-14" } });
+    fireEvent.change(input, { target: { value: "2026-10-18" } });
+    expect(went().at(-1)).toEqual({ method: "toPluginPanel", path: "spend", options: { subPath: "7d" } });
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.change(input, { target: { value: "0002-01-01" } });
+    expect(went()).toHaveLength(2);
+  });
+
+  it("reads a past day and a past range as what they are", async () => {
+    const past = (subPath: string) => render(backend((input) => output(input.range, {}, input.end ?? undefined)), subPath);
+    const day = past("day/2026-10-10");
+    await day.findByRole("region", { name: "Sat, Oct 10" });
+    expect(day.container.textContent).toContain("vs the day before");
+    expect(within(day.getByRole("region", { name: "Sat, Oct 10" })).getByRole("img", { name: "Sat, Oct 10 by model: $97.40" })).toBeTruthy();
+    // The rows keep their running badge: that thread runs now. The count of running threads is about the newest days only.
+    const threads = day.getByText("Threads").parentElement?.textContent ?? "";
+    expect(threads).toContain("2 over budget");
+    expect(threads).not.toContain("running");
+    day.lifecycle.unmount();
+
+    const week = past("7d/2026-10-08");
+    await week.findByText("$97.40");
+    expect(week.getByRole("columnheader", { name: "Oct 2 – 8" })).toBeTruthy();
+    expect(week.queryByText("Last 7 days")).toBeNull();
+  });
+
+  it("opens a day from its bar in the chart", async () => {
+    const slot = render(backend((input) => output(input.range)));
+    await slot.findByText("$97.40");
+    const went = () => slot.inspection.navigateCalls.at(-1);
+    fireEvent.click(slot.getByRole("button", { name: "Open Mon, Oct 12" }));
+    expect(went()).toEqual({ method: "toPluginPanel", path: "spend", options: { subPath: "day/2026-10-12" } });
+    fireEvent.click(slot.getByRole("button", { name: "Open Sun, Oct 18" }));
+    expect(went()).toEqual({ method: "toPluginPanel", path: "spend", options: { subPath: "day" } });
+    fireEvent.mouseEnter(within(slot.getByRole("list", { name: "Spend per day" })).getAllByRole("listitem")[0] as HTMLElement);
+    expect((await slot.findByRole("tooltip")).textContent).toContain("Click to open this day");
+  });
+
+  it("waits for today's date from the server before it moves through the days", async () => {
+    const slot = render(backend(() => new Promise<SpendOutput>(() => {})));
+    await slot.findByText("Loading spend…");
+    for (const name of ["Today", "Earlier", "Later"]) expect((slot.getByRole("button", { name }) as HTMLButtonElement).disabled).toBe(true);
+    expect(slot.queryByTestId("period")).toBeNull();
+  });
+
+  it("opens with the choices made last time", async () => {
+    const server = backend((input) => output(input.range, { metric: input.metric ?? "cost", tz: input.tz ?? "local" }));
+    const slot = render(server, "", { discount: 16 });
+    await slot.findByText("$97.40");
+    fireEvent.click(slot.getByRole("button", { name: "30 days" }));
+    fireEvent.click(within(slot.getByRole("group", { name: "Show" })).getByRole("button", { name: "Tokens" }));
+    fireEvent.change(slot.getByRole("combobox", { name: "Project" }), { target: { value: "proj_c" } });
+    fireEvent.click(slot.getByRole("button", { name: "View" }));
+    fireEvent.click(within(await slot.findByRole("group", { name: "Days" })).getByRole("button", { name: "UTC" }));
+    fireEvent.click(within(await slot.findByRole("group", { name: "Prices" })).getByRole("button", { name: "List price" }));
+    const last = { range: "30d", projectId: "proj_c", tz: "utc", metric: "tokens", listPrice: true };
+    await waitFor(() => expect(server.inputs.at(-1)).toEqual(last));
+
+    slot.lifecycle.unmount();
+    const again = backend((input) => output(input.range));
+    render(again, "", { discount: 16 });
+    await waitFor(() => expect(again.inputs[0]).toEqual(last));
+  });
+
+  it("forgets a remembered project the page no longer offers", async () => {
+    localStorage.setItem(VIEW_KEY, JSON.stringify({ projectId: "proj_gone" }));
+    const server = backend((input) => output(input.range));
+    render(server);
+    await waitFor(() => expect(server.inputs.at(-1)).toMatchObject({ projectId: null }));
+    expect(server.inputs[0]).toMatchObject({ projectId: "proj_gone" });
+    expect(loadView().projectId).toBeNull();
+  });
+
+  it("puts which days in the first toolbar row, and what to measure in the second", async () => {
+    const slot = render(backend((input) => output(input.range)));
+    await slot.findByText("$97.40");
+    const row = (el: HTMLElement) => el.closest(".flex-wrap");
+    const days = row(slot.getByRole("group", { name: "Range" }));
+    const measure = row(slot.getByRole("group", { name: "Show" }));
+    expect(days).not.toBeNull();
+    expect(days).not.toBe(measure);
+    expect(row(slot.getByRole("combobox", { name: "Project" }))).toBe(measure);
+    expect(row(slot.getByRole("button", { name: "View" }))).toBe(measure);
   });
 
   it("shows the empty state when no thread has reported", async () => {
@@ -387,8 +534,10 @@ describe("Spend page", () => {
     const slot = render(server);
     await slot.findByText("$97.40");
 
+    fireEvent.click(slot.getByRole("button", { name: "View" }));
+    const days = within(await slot.findByRole("group", { name: "Days" }));
     await slot.behavior.emitRealtime("usage", { threadId: "thr_aaaaaa01" });
-    fireEvent.click(within(slot.getByRole("group", { name: "Days" })).getByRole("button", { name: "UTC" }));
+    fireEvent.click(days.getByRole("button", { name: "UTC" }));
     expect(await slot.findByText("$88.10")).toBeTruthy();
 
     await waitFor(() => expect(server.inputs).toHaveLength(3), { timeout: REFETCH_DEBOUNCE_MS + 1500 });
@@ -459,8 +608,9 @@ describe("Spend page", () => {
     const slot = render(server);
     await slot.findByText("$97.40");
     expect(slot.getByRole("region", { name: "Call time" }).closest(".grid")?.className).toContain("md:grid-cols-2");
-    fireEvent.click(slot.getByRole("button", { name: "Panels" }));
-    const menu = within(await slot.findByRole("dialog"));
+    fireEvent.click(slot.getByRole("button", { name: "View" }));
+    const menu = within(await slot.findByRole("dialog", { name: "View" }));
+    expect(menu.getByText("Days")).toBeTruthy();
     expect(menu.getByText("Show on this page")).toBeTruthy();
     expect(menu.getByText("Kept by Burn for every bb window")).toBeTruthy();
     expect((menu.getByRole("button", { name: "Show all" }) as HTMLButtonElement).disabled).toBe(true);
@@ -470,7 +620,7 @@ describe("Spend page", () => {
     await waitFor(() => expect(slot.queryByRole("region", { name: "Token mix" })).toBeNull());
     expect(server.saved).toEqual([["mix"]]);
     expect(slot.getByRole("region", { name: "Call time" }).closest(".grid")?.className).not.toContain("md:grid-cols-2");
-    expect(slot.getByRole("button", { name: "Panels, 1 hidden" })).toBeTruthy();
+    expect(slot.getByRole("button", { name: "View, 1 hidden" })).toBeTruthy();
     expect((menu.getByRole("switch", { name: "Token mix" }) as HTMLInputElement).checked).toBe(false);
   });
 
@@ -505,7 +655,7 @@ describe("Spend page", () => {
     expect(slot.queryByRole("region", { name: "Per day" })).toBeNull();
     expect(slot.queryByRole("region", { name: "Models" })).toBeNull();
     expect(slot.getByRole("region", { name: "Token mix" })).toBeTruthy();
-    expect(slot.getByRole("button", { name: "Panels, 2 hidden" })).toBeTruthy();
+    expect(slot.getByRole("button", { name: "View, 2 hidden" })).toBeTruthy();
   });
 
   it("lists every panel the plugin keeps, in page order", () => {

@@ -31,13 +31,20 @@ The **Burn** page in bb's navigation shows spend across all threads by day, proj
 
 ![The Burn page for the last 30 days: cost and usage cards, spend per day by model, token mix and call time](../assets/screenshots/bb-burn-page.png)
 
-The toolbar picks what the page covers:
+The toolbar has two rows. The first picks which days the page shows:
 
-- **Range:** today, the last 7 days or the last 30 days, optionally for one project.
-- **With discounts or List price:** shown only while a discount is set. List price shows every figure without your discounts, to compare, and leaves budgets out, because they apply to the discounted figures.
-- **Local or UTC:** which calendar day counts as today. Local is the bb machine's day, and the default. UTC is the day that Shopify's AI proxy and menu bar count. The page remembers the choice.
-- **Show:** what the page measures: **Cost**, **Tokens** or **Calls**. The choice re-ranks the daily chart, the activity map, the threads, the Models table and the bars by project and by harness.
-- **Panels:** hides any panel apart from the four cost cards and the toolbar. The hide button that appears when you point at a panel does the same. Burn remembers the choice for every bb window.
+- **Days:** **Today**, the arrows that step back or forward by one range, and the dates, which open a date picker. Picking a date shows the range that ends on it, and clicking a day in the per-day chart opens that day. The page address keeps what you look at, such as `spend/7d/2026-10-15`, so the browser's back and forward buttons walk through it and a link opens the same days.
+- **Range:** a day, 7 days or 30 days. Looking back, every figure covers the days shown, and the change in the Spent card compares them with the same length of time just before them.
+
+The second picks what the page measures:
+
+- **Show:** **Cost**, **Tokens** or **Calls**. The choice re-ranks the daily chart, the activity map, the threads, the Models table and the bars by project and by harness.
+- **Project:** every project, or one.
+- **View:** which calendar day counts as today, and which panels show. **Local** is the bb machine's day, and the default; **UTC** is the day that Shopify's AI proxy and menu bar count. Any panel apart from the four cost cards can be hidden, here or with the hide button that appears when you point at it; Burn keeps the hidden panels for every bb window.
+
+Under the cost cards, a **With discounts or List price** switch shows while a discount is set. List price shows every figure without your discounts, to compare, and leaves budgets out, because they apply to the discounted figures.
+
+Burn remembers the range, the measure, the project, Local or UTC and the price switch on this device, so the page opens as you left it. Opening the page always shows the newest days. How far back you can look depends on each thread: it keeps its last 60 days with use, and its last 744 hours with use for Activity by hour, so a long-lived thread's oldest days drop out.
 
 The panels:
 

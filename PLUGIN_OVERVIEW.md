@@ -2,7 +2,7 @@
 
 - **A cost chip under the prompt box**, beside the context circle. It shows the thread's total and, while the thread works, what the last prompt added, for example `$4.27 +$0.30`. Click it for a card with where the money went (input, cache write, cache read and output), a bar for every model call, the models used, and the total with the thread's child threads, such as minions. From the card you can set a budget, open the Burn tab or copy a summary. On a phone, a flame in the thread header opens the same card while the prompt box is collapsed.
 - **A Burn tab in the side panel** that lists every prompt with its cost, newest or costliest first, and every child thread with its model, calls and cost.
-- **A Burn page in bb's navigation** with spend across all threads for today, the last 7 days or the last 30 days, for every project or one. It ranks by cost, tokens or calls, and shows spend per day by model, the token mix against what it cost, call times, the busiest hours, the costliest threads, a table of models, and spend by project and by harness.
+- **A Burn page in bb's navigation** with spend across all threads for today, the last 7 days or the last 30 days, or any earlier day, 7 days or 30 days, for every project or one. It ranks by cost, tokens or calls, and shows spend per day by model, the token mix against what it cost, call times, the busiest hours, the costliest threads, a table of models, and spend by project and by harness.
 - **A Cost entry in every thread menu**, and a red flame in the sidebar on threads over their budget.
 
 ## Budgets
