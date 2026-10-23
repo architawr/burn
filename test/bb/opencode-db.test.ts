@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -20,15 +20,22 @@ interface Message {
   data: Record<string, unknown>;
 }
 
-/** An opencode database with the two tables the reader queries, and the model catalog beside it. */
-function setup(messages: Message[], parts: { id: string; message: string; session: string; text: string; at: number }[]) {
+/** An opencode database with the tables the reader queries, and the model catalog beside it. */
+function setup(
+  messages: Message[],
+  parts: { id: string; message: string; session: string; text: string; at: number }[],
+  sessions: { id: string; parent?: string }[] = [],
+) {
   const dir = mkdtempSync(join(tmpdir(), "burn-opencode-"));
   dirs.push(dir);
   const db = new DatabaseSync(join(dir, "opencode.db"));
   db.exec(`
     create table message (id text primary key, session_id text not null, time_created integer not null, time_updated integer not null, data text not null);
     create table part (id text primary key, message_id text not null, session_id text not null, time_created integer not null, time_updated integer not null, data text not null);
+    create table session (id text primary key, parent_id text);
   `);
+  const session = db.prepare("insert into session (id, parent_id) values (?, ?)");
+  for (const s of sessions) session.run(s.id, s.parent ?? null);
   const message = db.prepare("insert into message (id, session_id, time_created, time_updated, data) values (?, ?, ?, ?, ?)");
   for (const m of messages) message.run(m.id, m.session, m.at, m.updated ?? m.at, JSON.stringify(m.data));
   const part = db.prepare("insert into part (id, message_id, session_id, time_created, time_updated, data) values (?, ?, ?, ?, ?, ?)");
@@ -58,6 +65,8 @@ const assistant = (cost: number): Record<string, unknown> => ({
   finish: "tool-calls",
 });
 
+const assistantAt = (cost: number, at: number): Record<string, unknown> => ({ ...assistant(cost), time: { created: at, completed: at + 1000 } });
+
 describe("createOpencodeDb", () => {
   it("turns opencode's user and assistant messages into a report, splitting the recorded cost by kind", async () => {
     const files = setup(
@@ -76,7 +85,8 @@ describe("createOpencodeDb", () => {
     const { cost } = got?.report ?? { cost: null };
     expect(cost).not.toBeNull();
     if (cost !== null) expect(cost.input + cost.output + cost.cacheRead + cost.cacheWrite).toBeCloseTo(0.005, 9);
-    expect(got?.report.tokens).toMatchObject({ input: 1000, output: 500, cacheRead: 2000, reasoning: 100 });
+    // opencode reports reasoning outside output; Burn counts it in output tokens.
+    expect(got?.report.tokens).toMatchObject({ input: 1000, output: 600, cacheRead: 2000, reasoning: 100 });
     expect(got?.report.byModel).toMatchObject([{ key: "deepseek/deepseek-v4-flash", calls: 1 }]);
     expect(got?.report.turns).toMatchObject([{ n: 1, prompt: "привет мир", calls: 1, ms: 2500 }]);
     expect(got?.report.estimated).toBe(false);
@@ -87,6 +97,70 @@ describe("createOpencodeDb", () => {
     const got = await createOpencodeDb(files).reportOf(["ses_1"], "UTC");
     expect(got?.report.cost.total).toBeCloseTo((1000 * 0.15 + 600 * 0.6 + 2000 * 0.003) / 1_000_000, 12);
     expect(got?.report.estimated).toBe(true);
+  });
+
+  it("splits a recorded cost by token count when the catalog does not price the model", async () => {
+    const files = setup([{ id: "msg_a", session: "ses_1", at: AT, data: { ...assistant(0.0036), modelID: "deepseek-unlisted" } }], []);
+    const got = await createOpencodeDb(files).reportOf(["ses_1"], "UTC");
+    const cost = got?.report.cost;
+    expect(cost?.total).toBeCloseTo(0.0036, 12);
+    // 1000 input, 600 output, 2000 cache read: 3600 tokens.
+    expect(cost?.input).toBeCloseTo(0.001, 12);
+    expect(cost?.output).toBeCloseTo(0.0006, 12);
+    expect(cost?.cacheRead).toBeCloseTo(0.002, 12);
+    expect(got?.report.estimated).toBe(false);
+  });
+
+  it("reads the catalog again after opencode refreshes it, so a model added later gets its prices", async () => {
+    const files = setup([{ id: "msg_a", session: "ses_1", at: AT, data: { ...assistant(0), modelID: "deepseek-new" } }], []);
+    const db = createOpencodeDb(files);
+    expect((await db.reportOf(["ses_1"], "UTC"))?.report.cost.total ?? 0).toBe(0);
+    writeFileSync(files.modelsPath, JSON.stringify({ deepseek: { models: { "deepseek-new": { cost: { input: 1, output: 1, cache_read: 1 } } } } }));
+    utimesSync(files.modelsPath, new Date(AT + 60_000), new Date(AT + 60_000));
+    expect((await db.reportOf(["ses_1"], "UTC"))?.report.cost.total).toBeCloseTo(3600 / 1_000_000, 12);
+  });
+
+  it("counts the calls of subagent sessions under the thread's session, within the parent's prompt", async () => {
+    const files = setup(
+      [
+        { id: "msg_user", session: "ses_1", at: AT, data: { role: "user", time: { created: AT } } },
+        { id: "msg_a", session: "ses_1", at: AT + 1, data: assistantAt(0.005, AT + 1) },
+        { id: "msg_task", session: "ses_child", at: AT + 2, data: { role: "user", time: { created: AT + 2 } } },
+        { id: "msg_b", session: "ses_child", at: AT + 3, data: assistantAt(0.002, AT + 3) },
+        { id: "msg_c", session: "ses_grandchild", at: AT + 4, data: assistantAt(0.001, AT + 4) },
+        { id: "msg_other", session: "ses_other", at: AT + 5, data: assistantAt(0.5, AT + 5) },
+      ],
+      [{ id: "part_1", message: "msg_user", session: "ses_1", text: "run the review", at: AT }],
+      [{ id: "ses_1" }, { id: "ses_child", parent: "ses_1" }, { id: "ses_grandchild", parent: "ses_child" }, { id: "ses_other" }],
+    );
+    const got = await createOpencodeDb(files).reportOf(["ses_1"], "UTC");
+    expect(got?.report.cost.total).toBeCloseTo(0.008, 12);
+    expect(got?.report.byModel).toMatchObject([{ key: "deepseek/deepseek-v4-flash", calls: 3 }]);
+    expect(got?.report.turns).toMatchObject([{ n: 1, prompt: "run the review", calls: 3 }]);
+  });
+
+  it("counts calls opencode recorded as failed or aborted, which carry no tokens", async () => {
+    const failed = (name: string, at: number): Record<string, unknown> => ({
+      role: "assistant",
+      providerID: "deepseek",
+      modelID: "deepseek-v4-flash",
+      cost: 0,
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      time: { created: at, completed: at + 1000 },
+      error: { name, data: { message: "stopped" } },
+    });
+    const files = setup(
+      [
+        { id: "msg_a", session: "ses_1", at: AT, data: assistantAt(0.005, AT) },
+        { id: "msg_aborted", session: "ses_1", at: AT + 10, data: failed("MessageAbortedError", AT + 10) },
+        { id: "msg_error", session: "ses_1", at: AT + 20, data: failed("ProviderAuthError", AT + 20) },
+      ],
+      [],
+    );
+    const got = await createOpencodeDb(files).reportOf(["ses_1"], "UTC");
+    expect(got?.report.cost.total).toBeCloseTo(0.005, 12);
+    expect(got?.report.byModel).toMatchObject([{ key: "deepseek/deepseek-v4-flash", calls: 3, failed: 1 }]);
+    expect(got?.report.days).toMatchObject([{ calls: 3, failed: 1, aborted: 1 }]);
   });
 
   it("returns null for a session the database does not have, and for a database that is not there", async () => {

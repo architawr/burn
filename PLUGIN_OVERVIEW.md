@@ -11,7 +11,7 @@ Set a budget for one thread from the chip, the thread menu or the Burn tab, or s
 
 ## Where the numbers come from
 
-Burn counts every thread, whatever harness runs it. For pi threads it reads the session logs that bb's pi bridge keeps on each machine, where pi already records the cost of every call. For OpenCode threads it reads opencode's own database on the same machine, where every assistant message records its tokens and cost. For Codex, Claude Code and other harnesses it reads the token usage that bb records after each call or turn, and keeps its own copy, because bb deletes older usage events. When a harness reports no cost, Burn prices its tokens at list price and marks the amount as an estimate, such as `~$1.23`. A model with no known price shows tokens instead of dollars.
+Burn counts every thread, whatever harness runs it. For pi threads it reads the session logs that bb's pi bridge keeps on each machine, where pi already records the cost of every call. For OpenCode threads it reads opencode's own database on the same machine, where every assistant message records its tokens and cost, including the calls of subagents that the task tool starts in child sessions. For Codex, Claude Code and other harnesses it reads the token usage that bb records after each call or turn, and keeps its own copy, because bb deletes older usage events. When a harness reports no cost, Burn prices its tokens at list price and marks the amount as an estimate, such as `~$1.23`. A model with no known price shows tokens instead of dollars.
 
 ## The pi extension (optional)
 
