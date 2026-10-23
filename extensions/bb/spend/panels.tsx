@@ -10,7 +10,7 @@ export const PANELS: readonly { id: SpendPanel; label: string; hint?: string }[]
   { id: "usage", label: "Usage cards", hint: "Tokens, calls, median call, failed calls" },
   { id: "chart", label: "Per day", hint: "The chart by day, or today's bar" },
   { id: "mix", label: "Token mix" },
-  { id: "time", label: "Call time", hint: "pi threads only" },
+  { id: "time", label: "Call time", hint: "pi and OpenCode threads only" },
   { id: "activity", label: "Activity by hour" },
   { id: "threads", label: "Threads", hint: "The ten biggest threads" },
   { id: "models", label: "Models" },

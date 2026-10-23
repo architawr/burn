@@ -395,7 +395,7 @@ describe("the chip's popover", () => {
     const card = within(await slot.findByRole("dialog"));
     expect(card.getByTestId("waiting").textContent).toContain("Waiting for the first model call");
     expect(card.getByTestId("waiting").textContent).toContain(
-      "from pi's session log in pi threads, and from the usage bb records for other harnesses. Claude Code reports as each turn ends.",
+      "from pi's session log in pi threads, from opencode's database in OpenCode threads, and from the usage bb records for other harnesses. Claude Code reports as each turn ends.",
     );
     expect(card.getByTestId("waiting").textContent).not.toMatch(/restart/i);
   });

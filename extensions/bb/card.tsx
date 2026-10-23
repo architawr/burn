@@ -36,7 +36,7 @@ export function WaitingNotice(): ReactNode {
     <div className="flex flex-col gap-1 text-xs" data-testid="waiting">
       <div className="font-semibold">Waiting for the first model call</div>
       <p className="text-muted-foreground">
-        Burn shows a thread's cost after its first model call: from pi's session log in pi threads, and from the usage bb records for other harnesses.
+        Burn shows a thread's cost after its first model call: from pi's session log in pi threads, from opencode's database in OpenCode threads, and from the usage bb records for other harnesses.
         Claude Code reports as each turn ends.
       </p>
     </div>

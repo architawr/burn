@@ -72,7 +72,7 @@ export function Change({ now, before, than, none }: { now: number; before: numbe
   );
 }
 
-const TIMING_HINT = "Only pi records how long a call took and how it ended.";
+const TIMING_HINT = "Only pi and OpenCode record how long a call took and how it ended.";
 
 export function UsageCards({ data }: { data: SpendOutput }) {
   const { p50, p90, timed, failed } = data.callTime;
@@ -260,7 +260,7 @@ export function CallTime({ data, hide }: { data: SpendOutput; hide?: ReactNode }
         </>
       )}
       <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
-        pi threads only: Codex and Claude Code record no call time. Failed means the provider returned an error; stopped means someone or the budget stop
+        pi and OpenCode threads only: Codex and Claude Code record no call time. Failed means the provider returned an error; stopped means someone or the budget stop
         aborted the call.
       </p>
     </section>
