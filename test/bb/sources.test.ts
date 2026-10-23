@@ -215,6 +215,24 @@ describe("createReportSource", () => {
     expect(await s.source.harnessOf(id(3))).toBeNull();
   });
 
+  it("asks the host for an opencode thread's database, and again when bb says it went idle", async () => {
+    const s = setup({ [id(1)]: { host: A, provider: "acp-opencode", sessions: ["ses_one"] } });
+    s.costs[id(1)] = 7;
+    expect(await s.cost(id(1))).toEqual([7]);
+    expect(s.calls[0]?.input).toMatchObject({
+      harness: "opencode",
+      threads: [{ threadId: id(1), sessionIds: ["ses_one", id(1)] }],
+    });
+    expect(await s.source.harnessOf(id(1))).toMatchObject({ reader: "opencode-db" });
+    s.costs[id(1)] = 9;
+    await s.harness.behavior.emitThreadEvent("thread.idle", {
+      thread: makeThreadResponse({ id: id(1), providerId: "acp-opencode", status: "idle" }),
+      lastAssistantText: null,
+    });
+    expect(await s.cost(id(1))).toEqual([9]);
+    expect(s.asked().at(-1)).toEqual([id(1)]);
+  });
+
   it("reads a thread of another provider again when bb says it went idle", async () => {
     const s = setup({ [id(1)]: { host: A, provider: "codex" } });
     s.rows.push(requestEvent(id(1), "go", "gpt-5.5"), usageEvent(id(1), CODEX_1));
