@@ -1,6 +1,6 @@
 {
   "name": "burn",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "See what each thread has cost: a pill in pi's footer and in bb's prompt-box footer, per-prompt breakdowns, budgets, and spend across threads.",
   "type": "module",
   "keywords": [
@@ -12,6 +12,13 @@
     "usage"
   ],
   "license": "MIT",
+  "contributors": [
+    {
+      "name": "Nikolai Berezovskii",
+      "email": "nikolai@brzv.sk",
+      "url": "https://github.com/brzvsk"
+    }
+  ],
   "engines": {
     "bb": ">=0.46",
     "bbPluginSdk": ">=0.6.49"

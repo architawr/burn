@@ -23,7 +23,7 @@ interface Message {
 /** An opencode database with the tables the reader queries, and the model catalog beside it. */
 function setup(
   messages: Message[],
-  parts: { id: string; message: string; session: string; text: string; at: number }[],
+  parts: { id: string; message: string; session: string; text?: string; data?: Record<string, unknown>; at: number }[],
   sessions: { id: string; parent?: string }[] = [],
 ) {
   const dir = mkdtempSync(join(tmpdir(), "burn-opencode-"));
@@ -34,12 +34,14 @@ function setup(
     create table part (id text primary key, message_id text not null, session_id text not null, time_created integer not null, time_updated integer not null, data text not null);
     create table session (id text primary key, parent_id text);
   `);
+  db.exec("begin");
   const session = db.prepare("insert into session (id, parent_id) values (?, ?)");
   for (const s of sessions) session.run(s.id, s.parent ?? null);
   const message = db.prepare("insert into message (id, session_id, time_created, time_updated, data) values (?, ?, ?, ?, ?)");
   for (const m of messages) message.run(m.id, m.session, m.at, m.updated ?? m.at, JSON.stringify(m.data));
   const part = db.prepare("insert into part (id, message_id, session_id, time_created, time_updated, data) values (?, ?, ?, ?, ?, ?)");
-  for (const p of parts) part.run(p.id, p.message, p.session, p.at, p.at, JSON.stringify({ type: "text", text: p.text }));
+  for (const p of parts) part.run(p.id, p.message, p.session, p.at, p.at, JSON.stringify(p.data ?? { type: "text", text: p.text }));
+  db.exec("commit");
   db.close();
   const modelsPath = join(dir, "models.json");
   writeFileSync(
@@ -90,6 +92,82 @@ describe("createOpencodeDb", () => {
     expect(got?.report.byModel).toMatchObject([{ key: "deepseek/deepseek-v4-flash", calls: 1 }]);
     expect(got?.report.turns).toMatchObject([{ n: 1, prompt: "привет мир", calls: 1, ms: 2500 }]);
     expect(got?.report.estimated).toBe(false);
+  });
+
+  it("takes a prompt from the last text the user typed, never from text opencode added", async () => {
+    const files = setup(
+      [
+        { id: "msg_user", session: "ses_1", at: AT, data: { role: "user", time: { created: AT } } },
+        { id: "msg_a", session: "ses_1", at: AT + 1, data: assistantAt(0.005, AT + 1) },
+      ],
+      [
+        { id: "part_1", message: "msg_user", session: "ses_1", text: "<system_instructions>…", at: AT },
+        { id: "part_2", message: "msg_user", session: "ses_1", text: "fix  the flaky test", at: AT },
+        { id: "part_3", message: "msg_user", session: "ses_1", data: { type: "text", text: "Called the Read tool with the following input", synthetic: true }, at: AT },
+      ],
+    );
+    const got = await createOpencodeDb(files).reportOf(["ses_1"], "UTC");
+    expect(got?.report.turns).toMatchObject([{ n: 1, prompt: "fix the flaky test", calls: 1 }]);
+  });
+
+  it("counts the calls after a user message opencode wrote itself within the prompt before it", async () => {
+    const user = (id: string, at: number): Message => ({ id, session: "ses_1", at, data: { role: "user", time: { created: at } } });
+    const files = setup(
+      [
+        user("msg_u1", AT),
+        { id: "msg_a1", session: "ses_1", at: AT + 1, data: assistantAt(0.001, AT + 1) },
+        user("msg_u2", AT + 2),
+        { id: "msg_a2", session: "ses_1", at: AT + 3, data: assistantAt(0.001, AT + 3) },
+        user("msg_u3", AT + 4),
+        { id: "msg_a3", session: "ses_1", at: AT + 5, data: assistantAt(0.001, AT + 5) },
+      ],
+      [
+        { id: "part_1", message: "msg_u1", session: "ses_1", text: "review this", at: AT },
+        {
+          id: "part_2",
+          message: "msg_u2",
+          session: "ses_1",
+          data: { type: "text", text: "Summarize the task tool output above and continue with your task.", synthetic: true },
+          at: AT + 2,
+        },
+        { id: "part_3", message: "msg_u3", session: "ses_1", data: { type: "compaction", auto: true }, at: AT + 4 },
+      ],
+    );
+    const got = await createOpencodeDb(files).reportOf(["ses_1"], "UTC");
+    expect(got?.report.turns).toMatchObject([{ n: 1, prompt: "review this", calls: 3 }]);
+    expect(got?.report.days).toMatchObject([{ prompts: 1, calls: 3 }]);
+  });
+
+  it("takes a slash command's prompt from its subtask when the user typed no text", async () => {
+    const files = setup(
+      [
+        { id: "msg_user", session: "ses_1", at: AT, data: { role: "user", time: { created: AT } } },
+        { id: "msg_a", session: "ses_1", at: AT + 1, data: assistantAt(0.005, AT + 1) },
+      ],
+      [
+        {
+          id: "part_1",
+          message: "msg_user",
+          session: "ses_1",
+          data: { type: "subtask", prompt: "Load the explorer skill", description: "explore", agent: "explorer", command: "explore" },
+          at: AT,
+        },
+      ],
+    );
+    const got = await createOpencodeDb(files).reportOf(["ses_1"], "UTC");
+    expect(got?.report.turns).toMatchObject([{ n: 1, prompt: "Load the explorer skill", calls: 1 }]);
+  });
+
+  it("reads the newest messages of a session longer than the cap", async () => {
+    const messages: Message[] = Array.from({ length: 20_001 }, (_, i) => ({
+      id: `msg_${String(i).padStart(6, "0")}`,
+      session: "ses_1",
+      at: AT + i,
+      data: assistantAt(i === 0 ? 5 : 0.001, AT + i),
+    }));
+    const got = await createOpencodeDb(setup(messages, [])).reportOf(["ses_1"], "UTC");
+    expect(got?.report.calls).toBe(20_000);
+    expect(got?.report.cost.total).toBeCloseTo(20, 6);
   });
 
   it("prices the tokens at the catalog's rates when opencode recorded no cost", async () => {

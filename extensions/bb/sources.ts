@@ -210,6 +210,12 @@ export function createReportSource(bb: BbPluginApi, opts: { onChange(threadIds: 
     heardStatus(thread);
   });
   for (const name of ["thread.idle", "thread.failed"] as const) bb.events.on(name, ({ thread }) => heardStatus(thread));
+  // Burn has no watch on opencode's database; bb records the thread's events, at most once a second, while opencode works.
+  bb.events.on("experimental_thread.events", ({ thread }) => {
+    if (harnessOf(thread.providerId).reader !== "opencode-db") return;
+    invalidate(thread.id);
+    opts.onChange([thread.id]);
+  });
 
   return {
     async reportsOf(threadIds) {

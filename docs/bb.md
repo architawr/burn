@@ -1,6 +1,6 @@
 # Burn in bb
 
-The bb plugin shows what every thread has cost, whatever harness runs it: pi, Codex, Claude Code or another. It needs no pi extension.
+The bb plugin shows what every thread has cost, whatever harness runs it: pi, OpenCode, Codex, Claude Code or another. It needs no pi extension.
 
 ## The chip and its card
 
@@ -10,7 +10,7 @@ On a phone, bb shows the row under the prompt box only while the prompt box is e
 
 ![The Burn card above the chip: $4.27 for this thread, $4.40 with its child thread](../assets/screenshots/bb-chip-card.png)
 
-Each model in the card shows its calls and its output speed, for example `41 calls · 62 tok/s`. The speed is the output tokens of the calls pi timed, divided by how long those calls took. A call's time runs from the request to the last token, so it includes the wait for the first token, and the speed reads lower than a provider's quoted generation speed. Only pi times its calls, so threads in other harnesses show no speed.
+Each model in the card shows its calls and its output speed, for example `41 calls · 62 tok/s`. The speed is the output tokens of the timed calls, divided by how long those calls took. A call's time runs from the request to the last token, so it includes the wait for the first token, and the speed reads lower than a provider's quoted generation speed. Only pi and OpenCode time their calls, so threads in other harnesses show no speed.
 
 Amounts that Burn estimated from list prices start with `~`, for example `~$1.23`. A model without a known price shows tokens instead of dollars. See [where the numbers come from](how-it-works.md#where-the-numbers-come-from).
 
@@ -54,7 +54,7 @@ The panels:
 - **Activity by hour** shows the busiest hours of each day.
 - **Costliest threads** lists the threads that spent the most in the range.
 - The **Models** table lists each model with its harness, calls, tokens, cost, cache hit rate, average call time, output tokens per second and failure rate.
-- **By project** and **By harness** split the spend between projects, and between pi, Codex, Claude Code and any other harness.
+- **By project** and **By harness** split the spend between projects, and between pi, OpenCode, Codex, Claude Code and any other harness.
 
 ![The Burn page's tables: costliest threads, models, and spend by project and by harness](../assets/screenshots/bb-burn-tables.png)
 

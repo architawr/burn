@@ -2,8 +2,8 @@
 
 ## Troubleshooting
 
-- **The chip shows a dashed "—" in bb.** The thread has made no model call yet, or its harness sends bb no usage. For a pi thread it can also mean that Burn found no session log on the thread's machine and no report from pi. Check that bb keeps its pi sessions in the default folder; see [session logs](#session-logs) below.
-- **The chip is dimmed with an age such as "3h".** bb says a pi thread is working, but its session log has not changed since then, so pi may have stopped. Threads of other harnesses are never dimmed, because a Claude Code turn can run for minutes before bb records its usage.
+- **The chip shows a dashed "—" in bb.** The thread has made no model call yet, or its harness sends bb no usage. For a pi thread it can also mean that Burn found no session log on the thread's machine and no report from pi. Check that bb keeps its pi sessions in the default folder; see [session logs](#session-logs) below. For an OpenCode thread it can mean that Burn found no opencode database on the thread's machine at `~/.local/share/opencode/opencode.db`, or under `$XDG_DATA_HOME/opencode` when that is set.
+- **The chip is dimmed with an age such as "3h".** bb says a pi or OpenCode thread is working, but its session log or opencode's database has not changed since then, so the agent may have stopped. Threads of other harnesses are never dimmed, because a Claude Code turn can run for minutes before bb records its usage.
 - **There is no chip in bb.** Check that the **Cost chip** setting in Burn's plugin settings is on. `bb plugin list` should show `burn` as running.
 - **The chip is in the thread header, not the footer.** Burn did not find bb's footer markup; see [bb's page markup](#bbs-page-markup) below. The chip works the same there. On a phone, the header shows only the flame until you expand the prompt box, and the chip then moves to the footer.
 - **There is no pill in pi.** The pill shows only in pi's terminal UI. `/burn` works in any mode.
@@ -32,8 +32,8 @@ Router aliases such as `shopify/auto-best` have no known price, so their threads
 
 ### Harnesses other than pi
 
-- A harness that sends bb no usage shows nothing.
-- Call time, output speed and failed calls come only from pi's session logs, and only from the calls pi timed. Codex and Claude Code record none of them, so their figures read "—".
+- A harness that sends bb no usage, and whose own records Burn does not read, shows nothing.
+- Call time, output speed and failed calls come from pi's session logs and opencode's database, and only from the calls they timed. Codex and Claude Code record none of them, so their figures read "—".
 - Output speed counts the whole call, from the request to the last token, so it reads lower than a provider's quoted generation speed. Figures that Burn 0.5.3 or older recorded, such as those kept for a machine that is offline, have no speed per prompt, and a model with some untimed calls has no speed until Burn reads that thread's log again.
 - Claude Code threads update once per turn and do not count Claude Code's subagents. They are never stopped at their budget, though budget alerts still fire.
 - Usage that bb deleted before Burn first read a thread counts as one entry: the total is right, but the split by day and model is lost. Claude Code's running total can start again between turns, so for a Claude Code thread such usage is lost instead.

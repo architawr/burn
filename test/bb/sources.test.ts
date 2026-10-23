@@ -233,6 +233,27 @@ describe("createReportSource", () => {
     expect(s.asked().at(-1)).toEqual([id(1)]);
   });
 
+  it("reads an opencode thread again when bb records new events for it, and leaves pi threads alone", async () => {
+    const s = setup({ [id(1)]: { host: A, provider: "acp-opencode", sessions: ["ses_one"] }, [id(2)]: { host: A } });
+    s.costs[id(1)] = 7;
+    s.costs[id(2)] = 1;
+    expect(await s.cost(id(1), id(2))).toEqual([7, 1]);
+    s.costs[id(1)] = 9;
+    s.costs[id(2)] = 2;
+    const before = s.calls.length;
+    for (const [threadId, providerId] of [
+      [id(1), "acp-opencode"],
+      [id(2), "pi"],
+    ]) {
+      await s.harness.behavior.emitThreadEvent("experimental_thread.events", { thread: makeThreadResponse({ id: threadId, providerId }), sequence: 1 });
+    }
+    expect(s.changed).toEqual([[id(1)]]);
+    expect(await s.cost(id(1))).toEqual([9]);
+    expect(s.asked().at(-1)).toEqual([id(1)]);
+    expect(await s.cost(id(2))).toEqual([1]);
+    expect(s.calls).toHaveLength(before + 1);
+  });
+
   it("reads a thread of another provider again when bb says it went idle", async () => {
     const s = setup({ [id(1)]: { host: A, provider: "codex" } });
     s.rows.push(requestEvent(id(1), "go", "gpt-5.5"), usageEvent(id(1), CODEX_1));

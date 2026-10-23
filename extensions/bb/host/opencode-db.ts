@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { buildReport, type EntryLike, type UsageReport } from "../../../src/report.js";
 
-/** A session long enough to hit this is read from its first messages; the newest ones matter most for a live chip. */
+/** A session longer than this is read from its newest messages, which matter most for a live chip. */
 const MESSAGES_MAX = 20_000;
 /** How deep Burn follows subagent sessions (the task tool) below a thread's own session. */
 const CHILD_DEPTH_MAX = 8;
@@ -47,9 +47,19 @@ interface MessageRow {
   time_updated: number;
 }
 
-interface PartRow {
+interface UserPartRow {
   message_id: string;
-  data: string;
+  type: unknown;
+  text: unknown;
+  prompt: unknown;
+  synthetic: unknown;
+  ignored: unknown;
+}
+
+interface Prompt {
+  /** Some part of the message came from the user rather than from opencode. */
+  typed: boolean;
+  text: string;
 }
 
 export interface OpencodeDb {
@@ -137,6 +147,31 @@ function usageOf(data: Record<string, unknown>, rates: Rates | null): Usage | nu
   return { input, output, cacheRead, cacheWrite, reasoning, cost, estimated: recorded <= 0 && rawTotal > 0 };
 }
 
+const collapse = (text: string): string => text.replace(/\s+/g, " ").trim();
+
+/** json_extract reads a JSON true as 1. */
+const opencodesOwn = (part: UserPartRow): boolean => part.type === "compaction" || (part.type === "text" && (part.synthetic === 1 || part.ignored === 1));
+
+/**
+ * Each user message's prompt: the last text the user typed, else the prompt of a
+ * slash command's subtask. A message whose every part opencode wrote itself, such
+ * as "Continue if you have next steps" or a compaction, is not typed.
+ */
+function promptsOf(parts: readonly UserPartRow[]): Map<string, Prompt> {
+  const typed = new Map<string, boolean>();
+  const texts = new Map<string, string>();
+  const subtasks = new Map<string, string>();
+  for (const part of parts) {
+    const own = opencodesOwn(part);
+    typed.set(part.message_id, (typed.get(part.message_id) ?? false) || !own);
+    if (!own && part.type === "text" && typeof part.text === "string") texts.set(part.message_id, collapse(part.text));
+    if (part.type === "subtask" && typeof part.prompt === "string") subtasks.set(part.message_id, collapse(part.prompt));
+  }
+  const prompts = new Map<string, Prompt>();
+  for (const [id, isTyped] of typed) prompts.set(id, { typed: isTyped, text: texts.get(id) ?? subtasks.get(id) ?? "" });
+  return prompts;
+}
+
 /** The stop reason of a call opencode recorded as failed: aborted by the user, or an error. */
 function stopReasonOf(data: Record<string, unknown>): "error" | "aborted" | undefined {
   if (isRecord(data.error)) return data.error.name === "MessageAbortedError" ? "aborted" : "error";
@@ -209,18 +244,22 @@ export function createOpencodeDb(opts: { path: string; modelsPath?: string }): O
         return null;
       }
       try {
-        const messages = db.prepare("select id, data, time_created, time_updated from message where session_id = ? order by time_created, id limit ?");
-        const texts = db.prepare("select message_id, data from part where session_id = ? and json_extract(data, '$.type') = 'text' order by time_created, id");
+        const messages = db.prepare(
+          "select id, data, time_created, time_updated from message where session_id = ? order by time_created desc, id desc limit ?",
+        );
+        // cross join keeps SQLite on the message index, so it reads the parts of user messages only, never tool output.
+        const userParts = db.prepare(
+          "select p.message_id, json_extract(p.data, '$.type') as type, json_extract(p.data, '$.text') as text, json_extract(p.data, '$.prompt') as prompt, " +
+            "json_extract(p.data, '$.synthetic') as synthetic, json_extract(p.data, '$.ignored') as ignored " +
+            "from message m cross join part p on p.message_id = m.id where m.session_id = ? and json_extract(m.data, '$.role') = 'user' order by p.time_created, p.id",
+        );
         const entries: EntryLike[] = [];
         let at = 0;
         for (const { id: sessionId, child } of withChildren(db, ids)) {
-          const rows = messages.all(sessionId, MESSAGES_MAX) as unknown as MessageRow[];
+          // Oldest first again: the stable sort below keeps a prompt before a call stamped in the same millisecond.
+          const rows = (messages.all(sessionId, MESSAGES_MAX) as unknown as MessageRow[]).reverse();
           if (rows.length === 0) continue;
-          const prompts = new Map<string, string>();
-          for (const part of texts.all(sessionId) as unknown as PartRow[]) {
-            const text = parse(part.data)?.text;
-            if (typeof text === "string") prompts.set(part.message_id, text.replace(/\s+/g, " ").trim());
-          }
+          const prompts = child ? new Map<string, Prompt>() : promptsOf(userParts.all(sessionId) as unknown as UserPartRow[]);
           for (const row of rows) {
             const data = parse(row.data);
             if (data === null) continue;
@@ -231,10 +270,11 @@ export function createOpencodeDb(opts: { path: string; modelsPath?: string }): O
             at = Math.max(at, updated);
             const timestamp = new Date(created).toISOString();
             if (data.role === "user") {
-              // A subagent's prompt comes from the parent's task call, not from the user;
-              // its calls count within the parent's prompt.
-              if (child) continue;
-              const entry = { type: "message", timestamp, message: { role: "user", content: prompts.get(row.id) ?? "" } } as EntryLike;
+              // A subagent's prompt comes from the parent's task call, not from the user, and
+              // opencode writes some user messages itself; their calls count within the prompt before them.
+              const prompt = prompts.get(row.id);
+              if (child || prompt?.typed === false) continue;
+              const entry = { type: "message", timestamp, message: { role: "user", content: prompt?.text ?? "" } } as EntryLike;
               entries.push(entry);
               continue;
             }

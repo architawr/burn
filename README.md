@@ -10,7 +10,7 @@ Burn puts a cost pill such as `$4.82 +$0.31` in pi's footer and in bb's prompt b
 
 ## What you get
 
-**In bb**, for every thread, whatever harness runs it (pi, Codex, Claude Code or another):
+**In bb**, for every thread, whatever harness runs it (pi, OpenCode, Codex, Claude Code or another):
 
 - A chip beside the context circle, with a card behind it that breaks the cost down and charts every call.
 - A Burn tab in the side panel that lists every prompt and adds the cost of child threads, such as minions.
@@ -85,6 +85,10 @@ bb plugin build
 The shared report, formatting and budget code is in `src/`. The pi extension is in `extensions/pi`, and the bb plugin is in `extensions/bb`. `test/layout.test.ts` keeps the halves from importing each other's dependencies.
 
 The screenshots come from a sandboxed bb and pi with made-up projects and threads.
+
+## Credits
+
+Support for OpenCode threads, which Burn reads from opencode's own database, is by [Nikolai Berezovskii](https://github.com/brzvsk) ([#1](https://github.com/kalindudc/burn/pull/1)).
 
 ## License
 
