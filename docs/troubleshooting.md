@@ -14,13 +14,17 @@
 
 bb's footer has no plugin slot. The chip is a thread header action that moves itself next to the context circle by finding bb's page markup (`[data-follow-up-composer-footer]`). If bb changes that markup, the chip stays in the thread header.
 
-The sidebar flag uses an experimental bb API, so on a bb without it the flag does not show. It covers every thread whose pi extension has reported, and every other thread active in the last 30 days.
+The sidebar flag uses an experimental bb API, so on a bb without it the flag does not show. It covers every thread that is not archived.
+
+Burn checks the daily budget at most every 30 seconds, so its notification can arrive up to half a minute after the spend that passes it.
 
 ### Session logs
 
 Burn reads pi's session logs from `~/.bb/pi-bridge-sessions` on each machine. bb's pi bridge can be pointed elsewhere with `BB_PI_BRIDGE_SESSION_DIR`, but Burn does not follow it.
 
 After a machine's bb daemon restarts, live updates for its threads resume within a minute.
+
+Burn waits at most a second for a machine to answer. When one takes longer, Burn shows the figures it last read there and updates them as soon as the machine answers.
 
 ### Prices
 

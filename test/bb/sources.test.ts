@@ -201,6 +201,70 @@ describe("createReportSource", () => {
     expect(await s.cost(id(1))).toEqual([6]);
   });
 
+  it("joins a read already under way rather than asking the host again", async () => {
+    const s = setup({ [id(1)]: { host: A } });
+    s.costs[id(1)] = 2;
+    const release = s.hold();
+    const first = s.cost(id(1));
+    await vi.waitFor(() => expect(s.calls).toHaveLength(1));
+    const second = s.cost(id(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(s.calls).toHaveLength(1);
+    release();
+    expect(await Promise.all([first, second])).toEqual([[2], [2]]);
+  });
+
+  it("answers by the deadline with the last report kept, then names the threads a late read changed", async () => {
+    const s = setup({ [id(1)]: { host: A }, [id(2)]: { host: A } });
+    s.costs[id(1)] = 2;
+    s.costs[id(2)] = 4;
+    await s.source.reportsOf([id(1), id(2)]);
+    s.tick(60_000);
+    s.costs[id(1)] = 3;
+    const release = s.hold();
+    let got: Map<string, { report: { cost: { total: number } } }> | null = null;
+    try {
+      got = await Promise.race([s.source.reportsOf([id(1), id(2)], { deadlineMs: 20 }), new Promise<null>((resolve) => setTimeout(() => resolve(null), 500))]);
+    } finally {
+      release();
+    }
+    expect([got?.get(id(1))?.report.cost.total, got?.get(id(2))?.report.cost.total]).toEqual([2, 4]);
+    await vi.waitFor(() => expect(s.changed).toEqual([[id(1)]]));
+    expect(await s.cost(id(1), id(2))).toEqual([3, 4]);
+    expect(s.calls).toHaveLength(2);
+  });
+
+  it("waits for a read already under way no longer than the caller that started it waited", async () => {
+    const s = setup({ [id(1)]: { host: A } });
+    s.costs[id(1)] = 2;
+    await s.source.reportsOf([id(1)]);
+    s.tick(60_000);
+    const release = s.hold();
+    try {
+      await s.source.reportsOf([id(1)], { deadlineMs: 20 });
+      const started = performance.now();
+      const joined = await Promise.race([s.source.reportsOf([id(1)], { deadlineMs: 2_000 }), new Promise<null>((resolve) => setTimeout(() => resolve(null), 500))]);
+      expect(joined?.get(id(1))?.report.cost.total).toBe(2);
+      expect(performance.now() - started).toBeLessThan(200);
+    } finally {
+      release();
+    }
+    expect(s.calls).toHaveLength(2);
+  });
+
+  it("keeps what it knows of more than a thousand threads, so a second read within a minute asks nothing", async () => {
+    const threads: Record<string, Thread> = {};
+    for (let n = 0; n < 1100; n++) threads[id(n)] = { host: A };
+    const s = setup(threads);
+    for (const t of Object.keys(threads)) s.costs[t] = 1;
+    await s.source.reportsOf(Object.keys(threads));
+    const lookups = s.harness.inspection.sdk.callsTo("threads.get").length;
+    const asked = s.calls.length;
+    await s.source.reportsOf(Object.keys(threads));
+    expect(s.harness.inspection.sdk.callsTo("threads.get").length).toBe(lookups);
+    expect(s.calls.length).toBe(asked);
+  });
+
   it("reads a thread of another provider from the usage bb records and asks no host, nor for a thread without a machine", async () => {
     const s = setup({ [id(1)]: { host: A, provider: "codex" }, [id(2)]: { host: null } });
     s.rows.push(requestEvent(id(1), "go", "gpt-5.5"), usageEvent(id(1), CODEX_1));

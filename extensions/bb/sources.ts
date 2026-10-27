@@ -14,7 +14,10 @@ const REPORT_TTL_MS = 60_000;
 const HOST_RETRY_MS = 60_000;
 const HOST_TIMEOUT_MS = 25_000;
 const SESSIONS_MAX = 32;
-const CACHE_MAX = 1000;
+// Room for every thread a month of use touches: a scan over more threads than a cache holds evicts each entry just before it is read again.
+const CACHE_MAX = 5000;
+/** A held report takes about 10 KB, so fewer are kept than the small per-thread facts. */
+const REPORTS_MAX = 2000;
 
 /**
  * A report Burn read itself: "log" from a pi thread's session logs, "events"
@@ -27,8 +30,12 @@ export interface LogReport {
 }
 
 export interface ReportSource {
-  /** The latest report of each thread that has one: from its host or bb's events, else the last one kept. */
-  reportsOf(threadIds: readonly string[]): Promise<Map<string, LogReport>>;
+  /**
+   * The latest report of each thread that has one: from its host or bb's events, else the last one kept.
+   * With `deadlineMs` it answers by then with what it has; reads still under way finish later, and
+   * `onChange` names the threads whose figures they changed.
+   */
+  reportsOf(threadIds: readonly string[], opts?: { deadlineMs?: number }): Promise<Map<string, LogReport>>;
   /** Whether bb says the thread is working right now. */
   running(threadId: string): Promise<boolean>;
   /** How Burn reads the thread, or null when bb could not say. */
@@ -51,13 +58,23 @@ const logSchema = z.object({ report: usageReportSchema, at: z.number() });
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
-function remember<V>(map: Map<string, V>, key: string, value: V): void {
+function remember<V>(map: Map<string, V>, key: string, value: V, max = CACHE_MAX): void {
   map.delete(key);
   map.set(key, value);
-  if (map.size > CACHE_MAX) {
+  if (map.size > max) {
     const oldest = map.keys().next().value;
     if (oldest !== undefined) map.delete(oldest);
   }
+}
+
+/** Whether `work` settles by `until`, a Date.now() time; at Infinity it waits as long as `work` takes. */
+function settlesBy(work: Promise<unknown>, until: number): Promise<boolean> {
+  if (until === Number.POSITIVE_INFINITY) return work.then(() => true);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), Math.max(0, until - Date.now()));
+  });
+  return Promise.race([work.then(() => true), late]).finally(() => clearTimeout(timer));
 }
 
 /**
@@ -80,6 +97,9 @@ export function createReportSource(bb: BbPluginApi, opts: { onChange(threadIds: 
   const versions = new Map<string, number>();
   const saved = new Map<string, number>();
   const failedAt = new Map<string, number>();
+  // The host read under way per thread, which a second caller joins instead of asking the host again, and
+  // when the caller that started it stopped waiting: a joiner waits no longer, since that caller's late read signals.
+  const reading = new Map<string, { run: Promise<void>; until: number }>();
 
   async function lookUp(threadId: string): Promise<Facts> {
     const before = heard.get(threadId) ?? 0;
@@ -118,6 +138,7 @@ export function createReportSource(bb: BbPluginApi, opts: { onChange(threadIds: 
 
   function invalidate(threadId: string): void {
     reports.delete(threadId);
+    reading.delete(threadId);
     remember(versions, threadId, (versions.get(threadId) ?? 0) + 1);
   }
 
@@ -169,7 +190,7 @@ export function createReportSource(bb: BbPluginApi, opts: { onChange(threadIds: 
       for (const { threadId, report, at } of answer.reports) {
         const got: LogReport | null = report !== null && at !== null ? { report, at, source: "log" } : null;
         answers.set(threadId, got);
-        if ((versions.get(threadId) ?? 0) === seen.get(threadId)) remember(reports, threadId, { got, checkedAt });
+        if ((versions.get(threadId) ?? 0) === seen.get(threadId)) remember(reports, threadId, { got, checkedAt }, REPORTS_MAX);
         if (got) await save(threadId, got);
       }
     }
@@ -218,41 +239,74 @@ export function createReportSource(bb: BbPluginApi, opts: { onChange(threadIds: 
   });
 
   return {
-    async reportsOf(threadIds) {
+    async reportsOf(threadIds, { deadlineMs } = {}) {
       const ids = [...new Set(threadIds)];
       const answers = new Map<string, LogReport | null>();
       const fromEvents = new Map<string, LogReport | null>();
-      const eventReads: Promise<void>[] = [];
+      const own: Promise<void>[] = [];
+      const joined = new Map<Promise<void>, number>();
+      const until = deadlineMs === undefined ? Number.POSITIVE_INFINITY : Date.now() + deadlineMs;
+      const looked = await Promise.all(ids.filter((threadId) => !fresh(threadId)).map(async (threadId) => ({ threadId, ...(await factsOf(threadId)) })));
+      // Nothing below awaits until every read is registered, so two callers never ask a host for the same thread.
       const wanted = new Map<string, { hostId: string; harness: "pi" | "opencode"; threadIds: string[] }>();
-      await Promise.all(
-        ids.map(async (threadId) => {
-          if (fresh(threadId)) return;
-          const { hostId, providerId } = await factsOf(threadId);
-          const reader = providerId === null ? null : harnessOf(providerId).reader;
-          if (providerId !== null && reader === "events") {
-            const read = events.reportOf(threadId, providerId).then((got) => void fromEvents.set(threadId, got && { ...got, source: "events" }));
-            eventReads.push(read);
-            return;
-          }
-          if (hostId === null || hostDown(hostId)) return;
-          const harness = reader === "opencode-db" ? "opencode" : "pi";
-          const key = `${hostId}:${harness}`;
-          const group = wanted.get(key) ?? { hostId, harness, threadIds: [] };
-          group.threadIds.push(threadId);
-          wanted.set(key, group);
-        }),
-      );
-      await Promise.all([...[...wanted.values()].map(({ hostId, harness, threadIds }) => ask(hostId, harness, threadIds, answers)), ...eventReads]);
+      for (const { threadId, hostId, providerId } of looked) {
+        if (fresh(threadId)) continue;
+        const reader = providerId === null ? null : harnessOf(providerId).reader;
+        if (providerId !== null && reader === "events") {
+          own.push(events.reportOf(threadId, providerId).then((got) => void fromEvents.set(threadId, got && { ...got, source: "events" })));
+          continue;
+        }
+        const under = reading.get(threadId);
+        if (under) {
+          joined.set(under.run, Math.min(until, under.until));
+          continue;
+        }
+        if (hostId === null || hostDown(hostId)) continue;
+        const harness = reader === "opencode-db" ? "opencode" : "pi";
+        const key = `${hostId}:${harness}`;
+        const group = wanted.get(key) ?? { hostId, harness, threadIds: [] };
+        group.threadIds.push(threadId);
+        wanted.set(key, group);
+      }
+      for (const { hostId, harness, threadIds: asked } of wanted.values()) {
+        const run = ask(hostId, harness, asked, answers);
+        for (const threadId of asked) reading.set(threadId, { run, until });
+        const done = () => {
+          for (const threadId of asked) if (reading.get(threadId)?.run === run) reading.delete(threadId);
+        };
+        run.then(done, done);
+        own.push(run);
+      }
+      const waits = [settlesBy(Promise.all(own), until), ...[...joined].map(([run, by]) => settlesBy(run, by))];
+      const inTime = (await Promise.all(waits)).every(Boolean);
+
+      /** What the reads said, once done; undefined for a thread they left as it was. */
+      const latest = (threadId: string): LogReport | null | undefined => {
+        if (fromEvents.has(threadId)) return fromEvents.get(threadId) ?? null;
+        if (answers.has(threadId)) return answers.get(threadId) ?? null;
+        return fresh(threadId) ? (reports.get(threadId)?.got ?? null) : undefined;
+      };
       const out = new Map<string, LogReport>();
       for (const threadId of ids) {
+        const got = latest(threadId);
         if (fromEvents.has(threadId)) {
-          const got = fromEvents.get(threadId);
           if (got) out.set(threadId, got);
           continue;
         }
-        const got = answers.has(threadId) ? answers.get(threadId) : fresh(threadId) ? reports.get(threadId)?.got : null;
         const best = got ?? (await lastKept(threadId));
         if (best) out.set(threadId, best);
+      }
+      if (!inTime) {
+        Promise.all([...own, ...joined.keys()]).then(
+          () => {
+            const late = ids.filter((threadId) => {
+              const got = latest(threadId);
+              return got != null && got.at !== out.get(threadId)?.at;
+            });
+            if (late.length > 0) opts.onChange(late);
+          },
+          (err: unknown) => bb.log.warn(`reading the reports of ${ids.length} thread(s) failed: ${message(err)}`),
+        );
       }
       return out;
     },
@@ -265,7 +319,7 @@ export function createReportSource(bb: BbPluginApi, opts: { onChange(threadIds: 
       return providerId === null ? null : harnessOf(providerId);
     },
     async forget(threadId) {
-      for (const map of [facts, statuses, heard, reports, versions, saved]) map.delete(threadId);
+      for (const map of [facts, statuses, heard, reports, versions, saved, reading]) map.delete(threadId);
       await events.forget(threadId);
     },
   };

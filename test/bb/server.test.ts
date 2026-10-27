@@ -26,8 +26,8 @@ type Options = {
   logs?: Record<string, unknown[]>;
   /** bb's status per thread; idle when not given. */
   statuses?: Record<string, "active" | "idle">;
-  /** What `threads.list` returns. */
-  listed?: { id: string; providerId: string; updatedAt: number; deletedAt: number | null }[];
+  /** What `threads.list` returns, a page at a time. */
+  listed?: { id: string; providerId: string; updatedAt: number; deletedAt: number | null; archivedAt?: number | null; status?: string }[];
   /** bb's provider per thread; pi when not given. */
   providers?: Record<string, string>;
   /** The usage events bb recorded, for threads of other providers. */
@@ -41,12 +41,17 @@ async function setup(opts: Options = {}) {
   const logs = opts.logs ?? {};
   const statuses = opts.statuses ?? {};
   const rows = opts.events ?? [];
+  /** When each thread's log last changed, as the host reports it; LOG_MTIME when not given. */
+  const mtimes: Record<string, number> = {};
+  const hostAsked: string[] = [];
+  let gate: Promise<void> | null = null;
   const { bb, harness } = createFakePluginHost({
     pluginId: "burn",
     settings: opts.settings,
     sdk: {
       threads: {
-        list: async () => opts.listed ?? [],
+        list: async ({ limit, offset = 0 }: { limit?: number; offset?: number } = {}) =>
+          (opts.listed ?? []).slice(offset, limit === undefined ? undefined : offset + limit),
         events: {
           list: async (args: Parameters<ReturnType<typeof listEvents>>[0]) =>
             args.types?.includes("thread/identity")
@@ -70,12 +75,14 @@ async function setup(opts: Options = {}) {
     },
     experimental_callHostRpc: async ({ input }) => {
       const { threads, timeZone } = input as { threads: { threadId: string }[]; timeZone: string };
+      hostAsked.push(...threads.map((t) => t.threadId));
+      if (gate) await gate;
       return {
         dir: "/home/me/.bb/pi-bridge-sessions",
         reports: threads.map(({ threadId }) => {
           const entries = logs[threadId];
           return entries
-            ? { threadId, report: buildReport(entries as EntryLike[], null, { timeZone }), at: LOG_MTIME }
+            ? { threadId, report: buildReport(entries as EntryLike[], null, { timeZone }), at: mtimes[threadId] ?? LOG_MTIME }
             : { threadId, report: null, at: null };
         }),
       };
@@ -105,7 +112,18 @@ async function setup(opts: Options = {}) {
     const providerId = opts.providers?.[threadId] ?? "pi";
     return harness.behavior.emitThreadEvent("experimental_thread.events", { thread: makeThreadResponse({ id: threadId, providerId }), sequence: rows.length });
   };
-  return { bb, harness, post, rpc, usage, signals, alerts, logs, statuses, spend, stops, record };
+  /** Holds every host call until the returned function runs. */
+  const hold = (): (() => void) => {
+    let release = (): void => undefined;
+    gate = new Promise((resolve) => {
+      release = () => {
+        gate = null;
+        resolve();
+      };
+    });
+    return release;
+  };
+  return { bb, harness, post, rpc, usage, signals, alerts, logs, mtimes, statuses, spend, stops, record, hostAsked: () => [...hostAsked], hold };
 }
 
 const envelope = (sentAt: number, over: Partial<UsageReport> = {}, threadId = THREAD) => ({ threadId, sentAt, report: sampleReport(over) });
@@ -555,6 +573,81 @@ describe("costs, overBudget and family", () => {
     const got = (await harness.behavior.callRpc("usage", { threadId: THREAD })) as Record<string, any>;
     expect(got).toMatchObject({ report: null, title: null, family: { total: 0, calls: 0, children: [] }, policy: QUIET });
     expect(harness.inspection.logEntries.some((e) => e.level === "warn")).toBe(true);
+  });
+});
+
+describe("what each call reads", () => {
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+  const id = (n: number) => `thr_${String(n).padStart(8, "0")}`;
+  const DAY_MS = 86_400_000;
+  const row = (threadId: string, over: { updatedAt?: number; archivedAt?: number | null; status?: string } = {}) => ({
+    id: threadId,
+    providerId: "pi",
+    updatedAt: Date.now(),
+    deletedAt: null,
+    archivedAt: null,
+    ...over,
+  });
+
+  it("flags only threads the sidebar shows, and reads no archived thread's log", async () => {
+    const archived = Array.from({ length: 50 }, (_, n) => id(n));
+    const s = await setup({
+      settings: { threadBudget: 10 },
+      logs: Object.fromEntries([THREAD, ...archived].map((t) => [t, [user(), assistant(12)]])),
+      listed: [row(THREAD), ...archived.map((t) => row(t, { archivedAt: Date.now() }))],
+    });
+    expect(await s.rpc("overBudget", {})).toEqual({ threads: [{ threadId: THREAD, cost: 12, budget: 10, estimated: false }] });
+    expect(s.hostAsked()).toEqual([THREAD]);
+  });
+
+  it("answers within a second from the last figures while a host is slow, and signals once the host answers", async () => {
+    const s = await setup({ logs: { [THREAD]: [user(), assistant(2)] } });
+    const cost = async () => (await s.rpc<{ threads: { cost: number }[] }>("costs", { threadIds: [THREAD] })).threads[0]?.cost;
+    expect(await cost()).toBeCloseTo(2);
+    // The host's worker restarting drops what Burn read there, so the next call asks the host again.
+    await s.harness.behavior.experimental_emitHostWorkerExit(HOST);
+    s.logs[THREAD]?.push(assistant(3));
+    s.mtimes[THREAD] = LOG_MTIME + 1;
+    const release = s.hold();
+    const before = s.signals().length;
+    try {
+      const answered = await Promise.race([cost(), new Promise((resolve) => setTimeout(() => resolve("still waiting"), 1_500))]);
+      expect(answered).toBeCloseTo(2);
+    } finally {
+      release();
+    }
+    await vi.waitFor(() => expect(s.signals().slice(before)).toContainEqual({ channel: "usage", payload: { threadId: THREAD } }));
+    expect(await cost()).toBeCloseTo(5);
+  });
+
+  it("checks the daily budget over threads active since yesterday, not every thread that ever reported", async () => {
+    const weekAgo = Date.now() - 7 * DAY_MS;
+    const old = Array.from({ length: 50 }, (_, n) => id(n));
+    const running = id(99);
+    const s = await setup({
+      settings: { dailyBudget: 100 },
+      logs: Object.fromEntries([...old, running].map((t) => [t, [user(), assistant(1)]])),
+      listed: [row(THREAD), ...old.map((t) => row(t, { updatedAt: weekAgo })), row(running, { updatedAt: weekAgo, status: "active" })],
+    });
+    for (const t of old) await s.bb.storage.kv.set(`report:${t}`, { report: sampleReport(), sentAt: 1, at: weekAgo });
+    const check = vi.spyOn(spendServer, "checkDailyBudget");
+    const get = vi.spyOn(s.bb.storage.kv, "get");
+    await s.post(envelope(1, costOf(2)));
+    await vi.waitFor(() => expect(check).toHaveBeenCalledTimes(1));
+    await check.mock.results[0]?.value;
+    const read = new Set(get.mock.calls.map(([key]) => String(key).slice(String(key).indexOf(":") + 1)));
+    expect(old.filter((t) => read.has(t))).toEqual([]);
+    expect(s.hostAsked().filter((t) => old.includes(t))).toEqual([]);
+    expect(s.hostAsked()).toContain(running);
+  });
+
+  it("checks the daily budget once for a burst of changes", async () => {
+    const check = vi.spyOn(spendServer, "checkDailyBudget");
+    const s = await setup({ settings: { dailyBudget: 100 } });
+    for (let n = 1; n <= 5; n++) await s.post(envelope(n, costOf(n)));
+    await vi.waitFor(() => expect(check).toHaveBeenCalled());
+    await settle();
+    expect(check).toHaveBeenCalledTimes(1);
   });
 });
 
