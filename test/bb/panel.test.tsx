@@ -180,3 +180,12 @@ describe("the Burn panel", () => {
     expect(slot.getByRole("note").textContent).toContain("Burn stopped a run at the $5 budget");
   });
 });
+
+it('shows native agents under their owning child without adding their spend twice', async () => {
+ const native={coverage:'available' as const,rows:[{id:'child-agent',calls:2,cost:{input:.4,output:0,cacheRead:0,cacheWrite:0,total:.4},estimated:false}]};
+ const family={...FAMILY,agents:native,children:FAMILY.children.map((child,i)=>({...child,...(i===0?{agents:native}:{})}))};
+ const slot=await renderPanel(backend(()=>answer({family})));
+ expect(slot.getByTestId('kpis').textContent).toContain('With agents$0.40');
+ expect(slot.getByTestId('agent-rows').textContent).toContain('$0.40 · of the thread total');
+ expect(slot.getByTestId('family-total').textContent).toBe('Total46 calls$6.64');
+});

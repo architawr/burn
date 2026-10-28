@@ -465,3 +465,23 @@ describe("the chip's popover", () => {
     expect(card.getByText("Open details")).toBeTruthy();
   });
 });
+
+it("uses the server's family delta without changing the chip's own total", () => {
+ const a=answer();a.family.lastTurnCost=3.25;
+ const view=chipView(a,{now:Date.now(),fresh:true,chipShows:'delta'});
+ expect(view.suffix?.text).toBe('+$3.25');
+ expect(view.value).toBe('$4.82');
+});
+
+it("refreshes and animates the family delta when only a known child reports", async () => {
+ const current=answer();
+ current.family.children=[{threadId:'thr_child000',title:'Worker',cost:1,calls:1,running:false,model:null,estimated:false}];
+ current.family.total=5.82;
+ const server=backend(()=>current);
+ const slot=await renderChip(server);
+ const chip=await slot.findByRole('button',{name:/Thread cost/});
+ current.family={...current.family,total:6.82,lastTurnCost:2.31};
+ await slot.behavior.emitRealtime('usage',{threadId:'thr_child000'});
+ await vi.waitFor(()=>expect(chip.textContent).toContain('+$2.31'));
+ expect(server.callsTo('usage')).toHaveLength(2);
+});

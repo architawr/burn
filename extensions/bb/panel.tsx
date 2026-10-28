@@ -14,6 +14,7 @@ import {
   usageLabel,
 } from "../../src/format.js";
 import { outputPerSec, reportOutputPerSec, type TurnRow, type UsageReport } from "../../src/report.js";
+import { AgentRows, agentLabel } from "./agents.js";
 import { BudgetEditor } from "./budget-editor.js";
 import { BudgetStatus, CopyAction, EstimatedNote, Label, Models, StoppedNotice, WaitingNotice, WhereItWent } from "./card.js";
 import { MiniBars } from "./charts.js";
@@ -60,6 +61,7 @@ function Kpis({ answer, report, atList }: { answer: UsageAnswer; report: UsageRe
       ) : (
         <Kpi label="Children" value="None" sub="No child thread has reported" />
       )}
+      <Kpi label="With agents" value={agentLabel(family.agents)} sub={family.agents?.rows.length ? `${family.agents.rows.length} subagents · part of the totals above${family.agents.coverage === "partial" ? " · partial" : ""}` : family.agents?.coverage === "available" ? "No saved subagent usage" : "Source has no complete agent breakdown"} />
       <Kpi
         label="Per call"
         value={report.calls > 0 && !tokenOnly ? formatAmount(own / report.calls, report.estimated) : "—"}
@@ -232,7 +234,7 @@ function Dot({ running }: { running: boolean }): ReactNode {
 
 function FamilyList({ answer, report, onOpen }: { answer: UsageAnswer; report: UsageReport; onOpen: (threadId: string) => void }): ReactNode {
   const family: Family = answer.family;
-  if (family.children.length === 0) return null;
+  if (family.children.length === 0 && !report.agents?.rows.length) return null;
   const top = report.byModel[0]?.key;
   const row = "grid w-full grid-cols-[1rem_minmax(0,1fr)_auto_3.75rem] items-center gap-2 px-2.5 py-1.5 text-left";
   return (
@@ -251,8 +253,9 @@ function FamilyList({ answer, report, onOpen }: { answer: UsageAnswer; report: U
           <span className="text-[11.5px] text-muted-foreground tabular-nums">{report.calls} calls</span>
           <span className="text-right font-semibold tabular-nums">{usageLabel(report)}</span>
         </div>
+        <AgentRows agents={report.agents} />
         {family.children.map((child) => (
-          <button
+          <div key={child.threadId}><button
             key={child.threadId}
             type="button"
             onClick={() => onOpen(child.threadId)}
@@ -270,7 +273,7 @@ function FamilyList({ answer, report, onOpen }: { answer: UsageAnswer; report: U
             </span>
             <span className="text-[11.5px] text-muted-foreground tabular-nums">{child.calls} calls</span>
             <span className="text-right font-semibold tabular-nums">{formatAmount(child.cost, child.estimated)}</span>
-          </button>
+          </button><AgentRows agents={child.agents} /></div>
         ))}
         <div className={cn(row, "border-t border-border bg-surface-recessed font-semibold")} data-testid="family-total">
           <span />

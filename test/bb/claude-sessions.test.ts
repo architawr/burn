@@ -101,3 +101,14 @@ it("excludes inherited fork messages even when session ids and copied timestamps
   expect(got?.report.tokens.output).toBe(4);
   expect((await reader.reportOf(["parent"], "UTC"))?.report.calls).toBe(1);
 });
+
+it("exposes native spend as a subset, with stable ids across reads", async () => {
+  const s = setup();
+  writeFileSync(s.main, line(call("main")));
+  writeFileSync(s.sub, line(call("native", 20)) + line(call("native", 20)));
+  const got = await s.reader.reportOf(["session-a"], "UTC");
+  expect(got?.report.agents?.coverage).toBe("available");
+  expect(got?.report.agents?.rows).toHaveLength(1);
+  expect(got?.report.agents?.rows[0]?.calls).toBe(1);
+  expect(got!.report.agents!.rows[0]!.cost.total).toBeLessThan(got!.report.cost.total);
+});

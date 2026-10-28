@@ -137,7 +137,9 @@ function fold(state: LedgerState, row: EventRow, harness: Harness, out: LedgerRe
       return true;
     }
     case "thread/contextWindowUsage/updated": {
-      const { providerThreadId: id, contextWindowUsage } = row.data;
+      const { providerThreadId, contextWindowUsage } = row.data;
+      const child = row.scope.kind === "turn" ? state.childTurns?.[row.scope.turnId] : undefined;
+      const id = child ? `${providerThreadId}:child:${child}` : providerThreadId;
       const { cost } = contextWindowUsage;
       if (cost === undefined) return false;
       const session = sessionOf(state, id);
@@ -192,11 +194,11 @@ export function ledgerEntries(ledger: Ledger, providerId: string, harness: Harne
         const price = prices === null || sessionOf(state, record.session).costed ? null : priceOf(prices, record.model);
         const cost = price === null ? zeroCost() : listCost(price, record.tokens, { tiers: harness.perCall && record.single });
         const usage = { ...record.tokens, cost, estimated: price !== null };
-        return { type: "message", timestamp, message: { role: "assistant", provider: providerId, model: record.model, usage } };
+        return { type: "message", timestamp, ...(record.session.includes(":child:") ? {agentId: record.session} : {}), message: { role: "assistant", provider: providerId, model: record.model, usage } };
       }
       case "cost": {
         const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { ...zeroCost(), total: record.usd } };
-        return { type: "usage", timestamp, provider: providerId, model: record.model, usage };
+        return { type: "usage", timestamp, ...(record.session.includes(":child:") ? {agentId: record.session} : {}), provider: providerId, model: record.model, usage };
       }
     }
   });

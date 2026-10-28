@@ -20,6 +20,10 @@ const amount = z.number().finite().nonnegative();
 const count = z.number().int().nonnegative();
 const key = z.string().max(200);
 const cost = z.object({ input: amount, output: amount, cacheRead: amount, cacheWrite: amount, total: amount });
+export const agentUsageSchema = z.object({
+  coverage: z.enum(["available", "partial"]),
+  rows: z.array(z.object({id: key, calls: count, cost, estimated: z.boolean()})),
+});
 const tokenParts = z.object({ input: amount, output: amount, cacheRead: amount, cacheWrite: amount });
 const tokenCounts = tokenParts.extend({ reasoning: amount });
 const kindCosts = cost.omit({ total: true });
@@ -118,6 +122,7 @@ const v2Schema = z.object({
   stoppedAt: amount.nullable(),
   // Burn 0.2 extensions send none.
   estimated: z.boolean().default(false),
+  agents: agentUsageSchema.optional(),
   coverageNote: z.string().max(500).optional(),
   coverage: z.enum(["available", "partial"]).optional(),
 });

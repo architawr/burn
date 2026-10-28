@@ -189,7 +189,7 @@ export function createClaudeSessions(opts: { dir: string }) {
           if (!sub) continue;
           at = Math.max(at, sub.stamp);
           for (const [key, value] of sub.entries) {
-            if (keep(key, value)) entries.set(id + ":" + key, value);
+            if (keep(key, value) && !entries.has(id + ":" + key)) entries.set(id + ":" + key, { ...value, agentId: id + ":" + path.split("/").pop()!.replace(/\.jsonl$/, "") });
           }
         }
       }
@@ -201,6 +201,7 @@ export function createClaudeSessions(opts: { dir: string }) {
       null,
       { timeZone },
     );
+    report.agents = { coverage: missing || missingParent ? "partial" : "available", rows: report.agents?.rows ?? [] };
     report.coverage = missing || missingParent ? "partial" : "available";
     report.coverageNote =
       missing || missingParent
