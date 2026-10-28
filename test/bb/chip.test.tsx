@@ -485,3 +485,28 @@ it("refreshes and animates the family delta when only a known child reports", as
  await vi.waitFor(()=>expect(chip.textContent).toContain('+$2.31'));
  expect(server.callsTo('usage')).toHaveLength(2);
 });
+
+it("opens the popover with its calculation closed, then allows explicit hover and keyboard focus", async () => {
+ const slot = await renderChip(backend());
+ const trigger = await chipButton(slot);
+ const card = await openCard(slot);
+ const calculation = card.getByRole('button', {name:'Cost calculation'});
+ // Wait for Radix's open autofocus, which previously focused this first button.
+ await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+ expect(card.queryByRole('tooltip')).toBeNull();
+ expect(document.activeElement).toBe(slot.getByRole('dialog'));
+ fireEvent.mouseEnter(calculation.parentElement!);
+ expect(card.getByRole('tooltip')).toBeTruthy();
+ fireEvent.mouseLeave(calculation.parentElement!);
+ expect(card.queryByRole('tooltip')).toBeNull();
+ act(() => calculation.focus());
+ expect(card.getByRole('tooltip')).toBeTruthy();
+ act(() => slot.getByRole('dialog').focus());
+ expect(card.queryByRole('tooltip')).toBeNull();
+ expect(slot.getByRole('dialog')).toBeTruthy();
+ fireEvent.click(trigger);
+ await vi.waitFor(() => expect(slot.queryByRole('dialog')).toBeNull());
+ await openCard(slot);
+ await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+ expect(within(slot.getByRole('dialog')).queryByRole('tooltip')).toBeNull();
+});

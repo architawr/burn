@@ -158,6 +158,7 @@ function BurnChip({ threadId, answer, placement }: { threadId: string; answer: U
   const now = useNow(30_000);
   const fresh = useFreshness(answer?.report ? answer.report.cost.total + (answer.family.total ?? 0) : null);
   const [open, setOpen] = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
   const view = chipView(answer, { now, fresh: fresh !== null, chipShows: prefs.chipShows });
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -182,7 +183,19 @@ function BurnChip({ threadId, answer, placement }: { threadId: string; answer: U
           <ChipFace view={view} fresh={fresh} placement={placement} />
         </button>
       </PopoverTrigger>
-      <PopoverContent side={placement === "footer" ? "top" : "bottom"} align="end" className="w-[340px] p-0" aria-label="Burn: what this thread cost">
+      <PopoverContent
+        ref={contentRef}
+        side={placement === "footer" ? "top" : "bottom"}
+        align="end"
+        className="w-[340px] p-0"
+        aria-label="Burn: what this thread cost"
+        onOpenAutoFocus={(event) => {
+          // Start on the dialog, not the price button: its focus opens the calculation.
+          // Tab still reaches the price and exposes the tooltip intentionally.
+          event.preventDefault();
+          contentRef.current?.focus();
+        }}
+      >
         <BurnCard
           answer={answer}
           threadId={threadId}
