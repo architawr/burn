@@ -13,7 +13,7 @@ The demonstration has main-thread calls $3.42 + its native agents $1.40 = This t
 
 ## UI changes
 
-The chip keeps its existing appearance and own-thread headline. Its popover gains one Subagents line and a calculation tooltip on the large price. The tooltip opens on hover, keyboard focus or click, and closes on mouse leave, blur or Escape. Token-only reports keep their token display without a misleading dollar tooltip. The existing charts, budgets, models and actions remain.
+The chip keeps its existing appearance and own-thread headline. Its popover gains one Subagents line and a calculation tooltip on the large price. The price has a muted dotted underline to make the hover target discoverable. The With children calculation section is shown only when the family contains reported BB children; native agents alone do not create that section. The tooltip opens on hover, keyboard focus or click, and closes on mouse leave, blur or Escape. Token-only reports keep their token display without a misleading dollar tooltip. The existing charts, budgets, models and actions remain.
 
 The details page gains the third KPI after With children, plus expandable native-agent rows under both the root thread and any child with identifiable native usage. Agent numbers are neutral labels; identifiers are available in the row title.
 
@@ -22,6 +22,8 @@ The details page gains the third KPI after With children, plus expandable native
 ![Calculation tooltip showing own-thread and family scopes](../assets/screenshots/bb-agents-calculation.jpg)
 
 ![Details with the native subset and agents nested under the owning child](../assets/screenshots/bb-agents-details.jpg)
+
+![Calculation without BB children: the family section is omitted](../assets/screenshots/bb-agents-no-children.jpg)
 
 These screenshots render the implemented React components in an isolated host harness with demonstration data. They contain no private chat content.
 
