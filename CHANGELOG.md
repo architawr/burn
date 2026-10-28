@@ -2,6 +2,18 @@
 
 Notable changes to Burn, newest first. Burn follows [semantic versioning](https://semver.org). Releases from 0.4.0 on are tagged `vX.Y.Z` in this repository; earlier versions were not tagged. Each release's commit message has the full detail, including how the release was checked.
 
+## 0.8.0 - 2026-10-28
+
+The Burn page opens quickly again when you have many threads. With 1,245 threads, a cold 30-day page took 6.8 seconds and showed only a bare "Loading spend…" box meanwhile.
+
+- **Every thread is read once, not three times.** One shared listing of bb's threads now supplies each thread's title, project, provider, environment and machine, so Burn stops asking bb about each one. A cold page over 1,245 threads made about 2,200 `threads.get` and 1,245 `environments.get` calls; they are gone.
+- **The page answers with what is ready.** The per-thread lookup is bounded and runs under the same one-second deadline as the machine reads, so a page over a thousand threads paints instead of waiting for every thread. The threads left over arrive with a usage signal.
+- **The page shows its shape while it loads.** The first load paints the cost cards, the chart and the threads table as placeholders, and a refresh keeps the figures on screen with a line naming how many threads are still being read.
+- **A background warm-up.** Three seconds after the plugin loads, Burn reads the details of threads touched in the last 30 days, so the first open is warm too.
+- The Burn popover's "Where it went" legend no longer overflows its card under a wider UI font, such as a monospace theme.
+
+Settings, stored keys and the plugin database's tables are the same as in 0.7.2.
+
 ## 0.7.2 - 2026-10-27
 
 bb opens threads quickly again when you have many of them. With 1,155 threads, bb took over a minute to open a thread, and Burn caused most of that load: about 265 calls a minute, averaging 891 ms each.

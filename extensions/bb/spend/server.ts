@@ -20,8 +20,11 @@ export interface SpendDeps {
    * Every thread's report that may have spend since `since`. server.ts adds
    * threads that never reported, read from their session logs; without it,
    * only the reports stored in KV count. `prices` "list" leaves out Burn's discount settings.
+   * `reading` is how many of those threads' figures were still being read when the answer was made.
    */
-  reports?(since: number, prices?: "settings" | "list"): Promise<Entry[]>;
+  reports?(since: number, prices?: "settings" | "list"): Promise<{ entries: Entry[]; reading: number }>;
+  /** Title, project and provider of these threads, from one shared listing rather than a call per thread. */
+  rowsOf?(ids: readonly string[]): Promise<Map<string, { title: string; projectId: string; providerId: string }>>;
   now?: () => number;
 }
 
@@ -318,13 +321,20 @@ export function createSpendHandlers(deps: SpendDeps): {
       for (const t of found) children.set(t.threadId, t.descendantIds.length);
     }
     const live = [...children.keys()];
-    const got = await mapLimit(live, SDK_CONCURRENCY, (threadId) => bb.sdk.threads.get({ threadId }));
-    const fresh = new Map(
-      got.map((t): [string, ThreadMeta] => [
-        t.id,
-        { title: t.title || t.titleFallback || UNTITLED, projectId: t.projectId, providerId: t.providerId, childCount: children.get(t.id) ?? 0 },
-      ]),
-    );
+    const fresh = new Map<string, ThreadMeta>();
+    // With the shared listing, title, project and provider come from it; without one, each thread is read on its own.
+    const rows = deps.rowsOf ? await deps.rowsOf(live) : null;
+    if (rows) {
+      for (const id of live) {
+        const row = rows.get(id);
+        if (row) fresh.set(id, { title: row.title, projectId: row.projectId, providerId: row.providerId, childCount: children.get(id) ?? 0 });
+      }
+    } else {
+      const got = await mapLimit(live, SDK_CONCURRENCY, (threadId) => bb.sdk.threads.get({ threadId }));
+      for (const t of got) {
+        fresh.set(t.id, { title: t.title || t.titleFallback || UNTITLED, projectId: t.projectId, providerId: t.providerId, childCount: children.get(t.id) ?? 0 });
+      }
+    }
     for (const id of stale) threads.set(id, { at, meta: fresh.get(id) ?? null });
     const wanted = new Set(ids);
     for (const id of threads.keys()) if (!wanted.has(id)) threads.delete(id);
@@ -347,7 +357,9 @@ export function createSpendHandlers(deps: SpendDeps): {
 
       // A day of slack: the range and the period before it, whatever daylight saving does.
       const since = dayDate(dayList[0] as string, tz).getTime() - (length + 1) * DAY_MS;
-      const entries = deps.reports ? await deps.reports(since, listPrice ? "list" : "settings") : await readReports(bb);
+      const { entries, reading } = deps.reports
+        ? await deps.reports(since, listPrice ? "list" : "settings")
+        : { entries: await readReports(bb), reading: 0 };
       // Budgets apply to the discounted figures, so a list-price answer leaves them out rather than compare the two.
       const [metas, names, dailyBudget] = await Promise.all([
         threadMeta(entries.map((e) => e.threadId)),
@@ -478,6 +490,7 @@ export function createSpendHandlers(deps: SpendDeps): {
           .sort((a, b) => a.name.localeCompare(b.name)),
         dailyBudget,
         reportedThreads,
+        reading,
         estimated: counted.some((row) => row.report.estimated),
         listPrice,
       };
@@ -567,7 +580,7 @@ async function checkOnce(deps: SpendDeps): Promise<BurnAlert | null> {
   const key = dailyAlertKey(today);
   if ((await deps.bb.storage.kv.get(key)) !== undefined) return null;
   const { cost, threads, estimated } = deps.reports
-    ? todayFrom(await deps.reports(dayDate(today).getTime() - DAY_MS), today)
+    ? todayFrom((await deps.reports(dayDate(today).getTime() - DAY_MS)).entries, today)
     : await todaySpend(deps.bb, today);
   if (cost < budget) return null;
   await deps.bb.storage.kv.set(key, { at });

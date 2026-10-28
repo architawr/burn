@@ -147,6 +147,7 @@ function output(range: SpendRange = "7d", over: Partial<SpendOutput> = {}, end?:
     ],
     dailyBudget: 50,
     reportedThreads: 40,
+    reading: 0,
     estimated: false,
     listPrice: false,
     ...over,
@@ -501,6 +502,32 @@ describe("Spend page", () => {
     fail = false;
     fireEvent.click(slot.getByRole("button", { name: "Try again" }));
     expect(await slot.findByText("$97.40")).toBeTruthy();
+  });
+
+  it("holds the page's shape while its first answer loads", async () => {
+    const slot = render(backend(() => new Promise<SpendOutput>(() => {})));
+    expect(slot.getByTestId("spend-skeleton")).toBeTruthy();
+    expect(slot.getByText("Loading spend…")).toBeTruthy();
+  });
+
+  it("names the threads still being read after a partial answer", async () => {
+    const slot = render(backend(() => output("7d", { reading: 312 })));
+    await slot.findByText("$97.40");
+    expect(slot.getByTestId("load-progress").textContent).toContain("Still reading 312 threads…");
+  });
+
+  it("keeps the figures on screen while it refreshes, with a line under the toolbar", async () => {
+    let resolve: (value: SpendOutput) => void = () => undefined;
+    const slot = render(
+      backend((input) => (input.metric === "tokens" ? new Promise<SpendOutput>((r) => (resolve = r)) : output(input.range))),
+    );
+    await slot.findByText("$97.40");
+    expect(slot.queryByTestId("load-progress")).toBeNull();
+    fireEvent.click(within(slot.getByRole("group", { name: "Show" })).getByRole("button", { name: "Tokens" }));
+    expect(slot.getByText("$97.40")).toBeTruthy();
+    expect(slot.getByTestId("load-progress")).toBeTruthy();
+    await act(async () => resolve(output("7d", { metric: "tokens" })));
+    await waitFor(() => expect(slot.queryByTestId("load-progress")).toBeNull());
   });
 
   it("refetches once after a burst of usage signals, and after a reconnect", async () => {

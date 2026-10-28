@@ -9,6 +9,7 @@ import { HOST_BATCH } from "../../extensions/bb/host/contract.js";
 import { createHostEntry } from "../../extensions/bb/host/entry.js";
 import { sessionFile } from "../../extensions/bb/host/pi-sessions.js";
 import type { EventRow } from "../../extensions/bb/ledger.js";
+import { createThreadDirectory } from "../../extensions/bb/directory.js";
 import { createReportSource } from "../../extensions/bb/sources.js";
 import { assistant, sampleReport, user } from "../helpers.js";
 import { CODEX_1, CODEX_1_2, CODEX_2, listEvents, requestEvent, usageEvent } from "./fixtures.js";
@@ -26,7 +27,7 @@ const costOf = (total: number) => sampleReport({ cost: { input: total, output: 0
 type Thread = { host: string | null; provider?: string; status?: "active" | "idle" | "error"; sessions?: string[] };
 
 /** A source over fake threads; each host answers with `costs[threadId]`, or throws when listed in `offline`. */
-function setup(threads: Record<string, Thread>, opts: { offline?: string[] } = {}) {
+function setup(threads: Record<string, Thread>, opts: { offline?: string[]; directory?: boolean } = {}) {
   const costs: Record<string, number> = {};
   const rows: EventRow[] = [];
   const calls: ExperimentalFakeHostRpcCall[] = [];
@@ -38,6 +39,23 @@ function setup(threads: Record<string, Thread>, opts: { offline?: string[] } = {
     pluginId: "burn",
     sdk: {
       threads: {
+        list: async ({ limit, offset = 0 }: { limit?: number; offset?: number } = {}) =>
+          Object.entries(threads)
+            .map(([threadId, t]) => ({
+              id: threadId,
+              title: null,
+              titleFallback: null,
+              projectId: "proj_1",
+              providerId: t.provider ?? "pi",
+              environmentId: t.host ? `env_${t.host}` : null,
+              environmentHostId: t.host,
+              status: t.status ?? "idle",
+              updatedAt: 1,
+              archivedAt: null,
+              deletedAt: null,
+              visibility: "visible" as const,
+            }))
+            .slice(offset, limit === undefined ? undefined : offset + limit),
         get: async ({ threadId }: { threadId: string }) => {
           const t = threads[threadId];
           if (getGate) await getGate;
@@ -72,7 +90,11 @@ function setup(threads: Record<string, Thread>, opts: { offline?: string[] } = {
     },
   });
   const changed: string[][] = [];
-  const source = createReportSource(bb, { onChange: (ids) => void changed.push(ids), now: () => now });
+  const source = createReportSource(bb, {
+    onChange: (ids) => void changed.push(ids),
+    now: () => now,
+    ...(opts.directory ? { threads: createThreadDirectory(bb, { now: () => now }) } : {}),
+  });
   const asked = (hostId?: string) =>
     calls
       .filter((c) => hostId === undefined || c.hostId === hostId)
@@ -265,6 +287,43 @@ describe("createReportSource", () => {
     expect(s.calls.length).toBe(asked);
   });
 
+  it("reads every thread's row from one shared listing instead of a call per thread", async () => {
+    const threads: Record<string, Thread> = {};
+    for (let n = 0; n < 50; n++) threads[id(n)] = { host: A };
+    const s = setup(threads, { directory: true });
+    for (const t of Object.keys(threads)) s.costs[t] = 1;
+    const got = await s.source.reportsOf(Object.keys(threads));
+    expect(got.size).toBe(50);
+    expect(s.harness.inspection.sdk.callsTo("threads.list")).toHaveLength(1);
+    expect(s.harness.inspection.sdk.callsTo("threads.get")).toHaveLength(0);
+    expect(s.harness.inspection.sdk.callsTo("environments.get")).toHaveLength(0);
+  });
+
+  it("names how many threads it is still reading while a host holds them", async () => {
+    const threads: Record<string, Thread> = {};
+    for (let n = 0; n < 5; n++) threads[id(n)] = { host: A };
+    const s = setup(threads, { directory: true });
+    for (const t of Object.keys(threads)) s.costs[t] = 1;
+    const release = s.hold();
+    const asking = s.source.reportsOf(Object.keys(threads), { deadlineMs: 20 });
+    await vi.waitFor(() => expect(s.calls.length).toBeGreaterThan(0));
+    expect(s.source.reading(Object.keys(threads))).toBe(5);
+    release();
+    await asking;
+    await vi.waitFor(() => expect(s.source.reading(Object.keys(threads))).toBe(0));
+  });
+
+  it("warms the threads' details without asking a host, and reads each thread only once", async () => {
+    const threads: Record<string, Thread> = {};
+    for (let n = 0; n < 50; n++) threads[id(n)] = { host: A };
+    const s = setup(threads, { directory: true });
+    await s.source.warm(Object.keys(threads));
+    expect(s.calls).toHaveLength(0);
+    const read = s.harness.inspection.sdk.callsTo("threads.events.list").length;
+    await s.source.warm(Object.keys(threads));
+    expect(s.harness.inspection.sdk.callsTo("threads.events.list").length).toBe(read);
+  });
+
   it("reads a thread of another provider from the usage bb records and asks no host, nor for a thread without a machine", async () => {
     const s = setup({ [id(1)]: { host: A, provider: "codex" }, [id(2)]: { host: null } });
     s.rows.push(requestEvent(id(1), "go", "gpt-5.5"), usageEvent(id(1), CODEX_1));
@@ -331,6 +390,8 @@ describe("createReportSource", () => {
   it("says a thread is running while bb says it is active, following thread events", async () => {
     const threads: Record<string, Thread> = { [id(1)]: { host: A, status: "active" }, [id(2)]: { host: A } };
     const s = setup(threads);
+    // The status comes from the details a read gathers, and from thread events; `running` reads it, never a lookup of its own.
+    await s.source.reportsOf([id(1), id(2)]);
     expect(await s.source.running(id(1))).toBe(true);
     expect(await s.source.running(id(2))).toBe(false);
     threads[id(2)] = { host: A, status: "active" };
@@ -347,12 +408,21 @@ describe("createReportSource", () => {
   it("keeps the status a thread event set while a lookup of that thread was under way", async () => {
     const s = setup({ [id(1)]: { host: A, status: "active" } });
     const release = s.holdLookups();
-    const asking = s.source.running(id(1));
+    const asking = s.source.reportsOf([id(1)]);
     await vi.waitFor(() => expect(s.harness.inspection.sdk.callsTo("threads.get")).toHaveLength(1));
     await s.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: id(1), providerId: "pi", status: "idle" }), lastAssistantText: null });
     release();
-    expect(await asking).toBe(false);
+    await asking;
     expect(await s.source.running(id(1))).toBe(false);
+  });
+
+  it("names the threads whose details arrived after the deadline, so the page can fill them in", async () => {
+    const s = setup({ [id(1)]: { host: A }, [id(2)]: { host: A } });
+    const release = s.holdLookups();
+    const got = await s.source.reportsOf([id(1), id(2)], { deadlineMs: 20 });
+    expect(got.size).toBe(0);
+    release();
+    await vi.waitFor(() => expect(s.changed).toEqual([[id(1), id(2)]]));
   });
 
   it("looks a thread up again after it becomes active, and after it is forgotten", async () => {

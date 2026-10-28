@@ -720,6 +720,71 @@ function Notice({ role, children }: { role: "status" | "alert"; children: ReactN
   );
 }
 
+/** A block where a figure will be, so the page keeps its shape while its answer is on the way. */
+function Skeleton({ className, style }: { className?: string; style?: CSSProperties }): ReactNode {
+  return (
+    <span aria-hidden className={cn("relative block overflow-hidden rounded bg-state-hover", className)} style={style}>
+      <span data-burn-shimmer="" className="pointer-events-none absolute inset-0" />
+    </span>
+  );
+}
+
+/** The Burn page's panels in outline: cost cards, a per-day chart and a threads table, all as placeholders. */
+function SkeletonDashboard(): ReactNode {
+  return (
+    <div className="space-y-5" data-testid="spend-skeleton" aria-hidden>
+      <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
+        {Array.from({ length: 4 }, (_, i) => (
+          <div key={i} className="rounded-lg border border-border p-3">
+            <Skeleton className="h-2.5 w-16" />
+            <Skeleton className="mt-2.5 h-5 w-24" />
+            <Skeleton className="mt-2.5 h-2 w-20" />
+          </div>
+        ))}
+      </div>
+      <section>
+        <Skeleton className="mb-2 h-2.5 w-20" />
+        <div className="flex h-36 items-end gap-1.5 pl-10">
+          {Array.from({ length: 18 }, (_, i) => (
+            <Skeleton key={i} className="flex-1" style={{ height: `${30 + ((i * 37) % 55)}%` }} />
+          ))}
+        </div>
+      </section>
+      <section>
+        <Skeleton className="mb-2 h-2.5 w-28" />
+        <div className="overflow-hidden rounded-lg border border-border">
+          {Array.from({ length: 6 }, (_, i) => (
+            <div key={i} className="flex items-center gap-3 border-t border-border px-3 py-2.5 first:border-t-0">
+              <Skeleton className="h-3 min-w-0 flex-1" />
+              <Skeleton className="h-3 w-12" />
+              <Skeleton className="h-3 w-14" />
+              <Skeleton className="h-3 w-16" />
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+/**
+ * A line under the toolbar while an answer is on the way, naming how many threads are still being
+ * read. A refresh keeps the figures below it on screen, so the page is usable before the new ones land.
+ */
+function LoadProgress({ loading, reading }: { loading: boolean; reading: number }): ReactNode {
+  if (!loading && reading <= 0) return null;
+  const words =
+    reading > 0 ? `Still reading ${reading.toLocaleString("en-US")} ${reading === 1 ? "thread" : "threads"}…` : "Loading spend…";
+  return (
+    <div role="status" aria-live="polite" data-testid="load-progress" className="flex items-center gap-2.5 text-xs text-muted-foreground">
+      <span className="relative h-1 w-28 shrink-0 overflow-hidden rounded-full bg-state-hover">
+        <span data-burn-shimmer="" className="pointer-events-none absolute inset-0" />
+      </span>
+      {words}
+    </div>
+  );
+}
+
 /** The Burn page: what every thread has spent and used, by day, hour, thread, model, project and harness. */
 export function SpendPage({ subPath }: PluginNavPanelProps): ReactNode {
   const [view, setView] = useState<SavedView>(loadView);
@@ -766,7 +831,7 @@ export function SpendPage({ subPath }: PluginNavPanelProps): ReactNode {
       </Notice>
     );
   } else if (data === null || !panels.ready) {
-    body = <Notice role="status">Loading spend…</Notice>;
+    body = <SkeletonDashboard />;
   } else if (data.reportedThreads === 0) {
     body = <Notice role="status">{EMPTY_TEXT}</Notice>;
   } else {
@@ -790,7 +855,7 @@ export function SpendPage({ subPath }: PluginNavPanelProps): ReactNode {
 
   return (
     <div className="h-full overflow-y-auto p-4 md:p-5">
-      <div className={cn("mx-auto w-full max-w-4xl space-y-5 text-foreground", loading && data !== null && "opacity-70")} aria-busy={loading}>
+      <div className="mx-auto w-full max-w-4xl space-y-5 text-foreground" aria-busy={loading || (data?.reading ?? 0) > 0}>
         <Toolbar
           nav={<PeriodNav period={period} today={today} onGo={go} />}
           metric={metric}
@@ -804,6 +869,7 @@ export function SpendPage({ subPath }: PluginNavPanelProps): ReactNode {
           options={data?.projectOptions ?? []}
           panels={panels}
         />
+        <LoadProgress loading={loading} reading={data?.reading ?? 0} />
         {body}
       </div>
     </div>

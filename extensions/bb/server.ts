@@ -8,6 +8,7 @@ import type { UsageReply } from "../../src/wire.js";
 import { ALERT_CHANNEL } from "./alerts.js";
 import { effectiveBudget, type OwnBudget, policyFor, positiveOrNull } from "./budgets.js";
 import { BUDGET_MAX, type CostRow, type Family, rpcContract } from "./contract.js";
+import { createThreadDirectory, type ThreadRow } from "./directory.js";
 import { budgetKey, logKey, REPORT_PREFIX, reportKey, stoppedKey } from "./keys.js";
 import { alertEvents, alertFor } from "./notify.js";
 import { discountsOf } from "./prefs.js";
@@ -29,6 +30,10 @@ const PI_FRESH_MS = 2 * 60_000;
 const HOST_WAIT_MS = 1000;
 /** The daily check reads every thread active since yesterday, so it runs at most this often. */
 const DAILY_CHECK_MS = 30_000;
+/** How long after the plugin loads the background warm-up starts, so it never slows startup. */
+const WARM_DELAY_MS = 3_000;
+/** The warm-up reads the details of threads touched in the Burn page's longest range, 30 days. */
+const WARM_DAYS = 30;
 /** bb's updatedAt stands still while a turn runs, so a thread in one of these may have spent since then. */
 const RUNNING = new Set(["starting", "active", "stopping"]);
 
@@ -161,19 +166,10 @@ const EMPTY = buildReport([], null);
 /** A report a POST just stored, used in place of the latest when looking at that POST. */
 type Pinned = { threadId: string; stored: Stored };
 
-const THREAD_PAGE = 200;
-const THREAD_PAGES_MAX = 50;
-const THREAD_LIST_TTL_MS = 60_000;
-
-interface Listed {
-  id: string;
-  updatedAt: number;
-  archivedAt: number | null;
-  status: string;
-}
-
 export default async function plugin(bb: BbPluginApi): Promise<void> {
   const settings = bb.settings.define(SETTINGS);
+  // Every thread's row, shared by the report source, the sidebar flags and the Burn page, so none of them asks bb per thread.
+  const directory = createThreadDirectory(bb);
   // null: the thread has no stored report, so it is not read from KV again.
   const reports = new Map<string, Stored | null>();
   const budgets = new Map<string, OwnBudget>();
@@ -183,14 +179,15 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
   let observing: Promise<void> = Promise.resolve();
   let disposed = false;
   let dailyTimer: ReturnType<typeof setTimeout> | undefined;
+  let warmTimer: ReturnType<typeof setTimeout> | undefined;
   let dailyAt = Number.NEGATIVE_INFINITY;
   bb.onDispose(() => {
     disposed = true;
     clearTimeout(dailyTimer);
+    clearTimeout(warmTimer);
   });
-  const source = createReportSource(bb, { onChange: changed });
+  const source = createReportSource(bb, { onChange: changed, threads: directory });
   const loadedAt = Date.now();
-  let listed: { at: number; threads: Listed[] } | null = null;
 
   async function load(threadId: string): Promise<Stored | null> {
     if (reports.has(threadId)) return reports.get(threadId) ?? null;
@@ -270,41 +267,29 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
       return got ? [{ id, report: got.report }] : [];
     });
 
-  /** Every thread bb knows, archived and hidden ones included, listed at most once a minute. */
-  async function listThreads(): Promise<Listed[]> {
-    if (listed && Date.now() - listed.at < THREAD_LIST_TTL_MS) return listed.threads;
-    const found: Listed[] = [];
-    for (let page = 0; page < THREAD_PAGES_MAX; page++) {
-      const rows = await bb.sdk.threads.list({ includeHidden: true, limit: THREAD_PAGE, offset: page * THREAD_PAGE });
-      for (const t of rows) if (t.deletedAt === null) found.push({ id: t.id, updatedAt: t.updatedAt, archivedAt: t.archivedAt ?? null, status: t.status });
-      if (rows.length < THREAD_PAGE) break;
-    }
-    listed = { at: Date.now(), threads: found };
-    return found;
-  }
-
   /**
    * The listed threads `keep` picks, and every thread that reported but bb did
    * not list (one created since the last listing); every thread that reported
    * when bb cannot list them.
    */
-  async function threadsWhere(keep: (thread: Listed) => boolean): Promise<string[]> {
+  async function threadsWhere(keep: (thread: ThreadRow) => boolean): Promise<string[]> {
     const reported = (await bb.storage.kv.list(REPORT_PREFIX)).map((key) => key.slice(REPORT_PREFIX.length));
-    let threads: Listed[];
+    let rows: ThreadRow[];
     try {
-      threads = await listThreads();
+      rows = await directory.all();
     } catch (err) {
       bb.log.warn(`listing threads failed, so only reporting threads count: ${message(err)}`);
       return reported;
     }
-    const known = new Set(threads.map((t) => t.id));
-    return [...threads.filter(keep).map((t) => t.id), ...reported.filter((id) => !known.has(id))];
+    const known = new Set(rows.map((t) => t.id));
+    return [...rows.filter(keep).map((t) => t.id), ...reported.filter((id) => !known.has(id))];
   }
 
   /** Reports of every thread that may have spent since `since`: active since then, or running now. */
-  async function threadReports(since: number, prices: "settings" | "list" = "settings"): Promise<{ threadId: string; report: UsageReport }[]> {
+  async function threadReports(since: number, prices: "settings" | "list" = "settings"): Promise<{ entries: { threadId: string; report: UsageReport }[]; reading: number }> {
     const ids = await threadsWhere((t) => t.updatedAt >= since || RUNNING.has(t.status));
-    return reportsIn(await resolveMany(ids, undefined, prices), ids).map(({ id, report }) => ({ threadId: id, report }));
+    const resolved = await resolveMany(ids, undefined, prices);
+    return { entries: reportsIn(resolved, ids).map(({ id, report }) => ({ threadId: id, report })), reading: source.reading(ids) };
   }
 
   async function ownBudget(threadId: string): Promise<OwnBudget> {
@@ -395,6 +380,16 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
     budgetOf: async (threadId, report) => (await budgetOf(threadId, report))?.amount ?? null,
     dailyBudget: async () => positiveOrNull((await settings.get()).dailyBudget),
     reports: threadReports,
+    rowsOf: async (ids) => {
+      const out = new Map<string, { title: string; projectId: string; providerId: string }>();
+      await Promise.all(
+        ids.map(async (id) => {
+          const row = await directory.one(id);
+          if (row) out.set(id, { title: row.title || row.titleFallback || UNTITLED, projectId: row.projectId, providerId: row.providerId });
+        }),
+      );
+      return out;
+    },
   };
 
   /** Publishes the toasts a change in a thread's figures earns. */
@@ -601,11 +596,12 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
   // A thread moving in or out of the archive moves in or out of the sidebar's flags.
   for (const name of ["thread.archived", "thread.unarchived"] as const) {
     bb.events.on(name, () => {
-      listed = null;
+      directory.refresh();
     });
   }
 
   bb.events.on("thread.deleted", async ({ thread }) => {
+    directory.refresh();
     reports.delete(thread.id);
     budgets.delete(thread.id);
     titles.delete(thread.id);
@@ -617,4 +613,15 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
       bb.log.warn(`forgetting the usage report of ${thread.id} failed: ${message(err)}`);
     }
   });
+
+  // Read the details of the threads the Burn page is most likely to ask about, so its first open
+  // over a thousand threads answers from a warm cache instead of looking each one up.
+  warmTimer = setTimeout(() => {
+    if (disposed) return;
+    threadsWhere((t) => t.updatedAt >= Date.now() - WARM_DAYS * 86_400_000)
+      .then((ids) => source.warm(ids))
+      .catch((err: unknown) => {
+        if (!disposed) bb.log.warn(`warming the threads' details failed: ${message(err)}`);
+      });
+  }, WARM_DELAY_MS);
 }

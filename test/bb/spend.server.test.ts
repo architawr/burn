@@ -726,11 +726,14 @@ describe("daily budget alert", () => {
 
   it("marks the day's spend as an estimate when a thread that spent today is one", async () => {
     const s = await setup({ reports: {}, threads: {}, daily: 1 });
-    const reports = async () => [
-      { threadId: "thr_eeeeee01", report: reportWith([day(0, 0.6)], { estimated: true }) },
-      { threadId: "thr_eeeeee02", report: reportWith([day(0, 0.5)]) },
-      { threadId: "thr_eeeeee03", report: reportWith([day(1, 9)], { estimated: true }) },
-    ];
+    const reports = async () => ({
+      reading: 0,
+      entries: [
+        { threadId: "thr_eeeeee01", report: reportWith([day(0, 0.6)], { estimated: true }) },
+        { threadId: "thr_eeeeee02", report: reportWith([day(0, 0.5)]) },
+        { threadId: "thr_eeeeee03", report: reportWith([day(1, 9)], { estimated: true }) },
+      ],
+    });
     expect(await checkDailyBudget({ ...s.deps, reports })).toMatchObject({ body: "~$1.10 spent across 2 threads today, over the $1 daily budget." });
   });
 

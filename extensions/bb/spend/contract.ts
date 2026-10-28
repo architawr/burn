@@ -95,6 +95,8 @@ export const spendOutputSchema = z.object({
   dailyBudget: amount.nullable(),
   /** Threads with a stored report in any project and at any time; 0 means no thread has reported. */
   reportedThreads: count,
+  /** Threads whose figures this answer could not read in time; the rest arrive with a usage signal. */
+  reading: count,
   /** Some counted spend is a list-price estimate. */
   estimated: z.boolean(),
   /** At list price, without Burn's discount settings; budgets are left out, since they apply to the discounted figures. */

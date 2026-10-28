@@ -120,11 +120,14 @@ export function WhereItWent({ report }: { report: UsageReport }): ReactNode {
       <StackedBar parts={(["input", "cacheRead", "cacheWrite", "output"] as const).map((k) => ({ key: k, value: cost[k], className: KIND_COLOURS[k] }))} />
       <div className="mt-2 grid grid-cols-2 gap-x-3.5 gap-y-1 text-xs">
         {KINDS.map(([key, label]) => (
-          <div key={key} className="flex items-center gap-1.5 whitespace-nowrap">
+          // The label gives way before the figures do: a wider UI font (a monospace theme, say) must not push the row past the card.
+          <div key={key} className="flex min-w-0 items-center gap-1.5">
             <i className={cn("size-2 shrink-0 rounded-[2px]", KIND_COLOURS[key])} />
-            <span>{label}</span>
-            <span className="ml-auto tabular-nums">{formatUsd(cost[key])}</span>
-            <span className="w-7 text-right text-muted-foreground tabular-nums">{pct(cost[key])}</span>
+            <span className="truncate" title={label}>
+              {label}
+            </span>
+            <span className="ml-auto shrink-0 tabular-nums">{formatUsd(cost[key])}</span>
+            <span className="w-7 shrink-0 text-right text-muted-foreground tabular-nums">{pct(cost[key])}</span>
           </div>
         ))}
       </div>

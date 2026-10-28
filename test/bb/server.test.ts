@@ -50,8 +50,31 @@ async function setup(opts: Options = {}) {
     settings: opts.settings,
     sdk: {
       threads: {
-        list: async ({ limit, offset = 0 }: { limit?: number; offset?: number } = {}) =>
-          (opts.listed ?? []).slice(offset, limit === undefined ? undefined : offset + limit),
+        // The real `threads.list` carries every field `threads.get` and `environments.get` used to be asked for one thread at a time.
+        list: async ({ limit, offset = 0 }: { limit?: number; offset?: number } = {}) => {
+          const row = (t: { id: string; providerId: string; updatedAt: number; deletedAt: number | null; archivedAt?: number | null; status?: string }) => ({
+            title: null,
+            titleFallback: null,
+            projectId: "proj_1",
+            environmentId: "env_1",
+            environmentHostId: HOST,
+            status: "idle",
+            archivedAt: null,
+            visibility: "visible" as const,
+            ...t,
+          });
+          const all = (
+            opts.listed ??
+            [THREAD, CHILD, GRANDCHILD, ...Object.keys(logs), ...Object.keys(opts.providers ?? {}), ...Object.keys(opts.statuses ?? {})].map((id) => ({
+              id,
+              providerId: opts.providers?.[id] ?? "pi",
+              updatedAt: Date.now(),
+              deletedAt: null,
+              status: statuses[id] ?? "idle",
+            }))
+          ).map(row);
+          return all.slice(offset, limit === undefined ? undefined : offset + limit);
+        },
         events: {
           list: async (args: Parameters<ReturnType<typeof listEvents>>[0]) =>
             args.types?.includes("thread/identity")
