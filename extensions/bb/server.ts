@@ -14,6 +14,7 @@ import { alertEvents, alertFor } from "./notify.js";
 import { discountsOf } from "./prefs.js";
 import { type Stored, storedSchema, usageEnvelopeSchema } from "./schema.js";
 import { createReportSource } from "./sources.js";
+import { withOwnedThreads } from "./family.js";
 import { checkDailyBudget, createSpendHandlers, type SpendDeps } from "./spend/server.js";
 
 export { rpcContract } from "./contract.js";
@@ -335,7 +336,8 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
     try {
       // Archived and hidden children still cost money, and thread-spend counts them too.
       const { threads } = await bb.sdk.threads.experimental_listDescendants({ threadIds, includeArchived: true, includeHidden: true });
-      return new Map(threads.map((t) => [t.threadId, t.descendantIds]));
+      const rows = await directory.all();
+      return new Map(threads.map((t) => [t.threadId, withOwnedThreads(t.threadId, t.descendantIds, rows)]));
     } catch (err) {
       bb.log.warn(`listing the child threads of ${threadIds.length} thread(s) failed: ${message(err)}`);
       return new Map();
@@ -380,6 +382,7 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
     budgetOf: async (threadId, report) => (await budgetOf(threadId, report))?.amount ?? null,
     dailyBudget: async () => positiveOrNull((await settings.get()).dailyBudget),
     reports: threadReports,
+    descendantsOf,
     rowsOf: async (ids) => {
       const out = new Map<string, { title: string; projectId: string; providerId: string }>();
       await Promise.all(

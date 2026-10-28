@@ -1,6 +1,7 @@
 import type { ExperimentalHostRpcContext, ExperimentalHostWatchEvent, ExperimentalHostWatchSubscription } from "@get-bb/plugin-sdk";
 import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
 import { CHANGED_MAX, hostContract, hostSignals } from "./contract.js";
+import { createClaudeSessions, claudeProjectsDir } from "./claude-sessions.js";
 import { createOpencodeDb, opencodeDbPath } from "./opencode-db.js";
 import { createPiSessions, sessionDir } from "./pi-sessions.js";
 
@@ -11,7 +12,8 @@ type Context = ExperimentalHostRpcContext<typeof hostSignals>;
  * machine bb runs it on, and signals the server as soon as a pi log changes so
  * the chip updates live.
  */
-export function createHostEntry(opts: { dir: string; opencodeDb?: string; opencodeModels?: string }) {
+export function createHostEntry(opts: { dir: string; opencodeDb?: string; opencodeModels?: string; claudeDir?: string }) {
+  const claude = createClaudeSessions({ dir: opts.claudeDir ?? claudeProjectsDir() });
   const sessions = createPiSessions({ dir: opts.dir });
   const opencode = createOpencodeDb({ path: opts.opencodeDb ?? opencodeDbPath(), modelsPath: opts.opencodeModels });
   let watch: Promise<ExperimentalHostWatchSubscription | null> | null = null;
@@ -57,7 +59,7 @@ export function createHostEntry(opts: { dir: string; opencodeDb?: string; openco
         const reports = [];
         for (const { threadId, sessionIds } of threads) {
           context.signal.throwIfAborted();
-          const got = harness === "opencode" ? await opencode.reportOf(sessionIds, timeZone) : await sessions.reportOf(sessionIds, timeZone);
+          const got = harness === "claude" ? await claude.reportOf(sessionIds, timeZone) : harness === "opencode" ? await opencode.reportOf(sessionIds, timeZone) : await sessions.reportOf(sessionIds, timeZone);
           reports.push({ threadId, report: got?.report ?? null, at: got?.at ?? null });
         }
         return { dir: opts.dir, reports };

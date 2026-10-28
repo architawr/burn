@@ -7,7 +7,7 @@ export type EventRow = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["events"
 type RowOf<T extends EventRow["type"]> = Extract<EventRow, { type: T }>;
 
 /** The thread events a ledger reads: who asked for each turn, and what each session used and cost. */
-export const USAGE_EVENTS = ["client/turn/requested", "thread/tokenUsage/updated", "thread/contextWindowUsage/updated"] as const;
+export const USAGE_EVENTS = ["client/turn/requested", "turn/started", "thread/tokenUsage/updated", "thread/contextWindowUsage/updated"] as const;
 
 /** A session's token counts as its provider bridge gives them to bb. */
 export type Totals = RowOf<"thread/tokenUsage/updated">["data"]["tokenUsage"]["total"];
@@ -35,6 +35,8 @@ export interface LedgerState {
   at: number | null;
   model: string | null;
   sessions: Record<string, SessionState>;
+  /** Native child turns share the parent provider id in BB; their counters do not. */
+  childTurns?: Record<string, string>;
 }
 
 export interface Ledger {
@@ -99,6 +101,13 @@ export function splitTokens(t: Totals, inCache: boolean | null): SplitTokens {
 /** Folds one event into the state; true when it changed what a report reads. */
 function fold(state: LedgerState, row: EventRow, harness: Harness, out: LedgerRecord[]): boolean {
   switch (row.type) {
+    case "turn/started": {
+      if (harness.separateChildCounters && row.scope.kind === "turn" && row.data.parentToolCallId) {
+        state.childTurns ??= {};
+        state.childTurns[row.scope.turnId] = row.data.parentToolCallId;
+      }
+      return false;
+    }
     case "client/turn/requested": {
       const { data } = row;
       state.model = data.execution.model;
@@ -110,7 +119,9 @@ function fold(state: LedgerState, row: EventRow, harness: Harness, out: LedgerRe
       return true;
     }
     case "thread/tokenUsage/updated": {
-      const { providerThreadId: id, tokenUsage } = row.data;
+      const { providerThreadId, tokenUsage } = row.data;
+      const child = row.scope.kind === "turn" ? state.childTurns?.[row.scope.turnId] : undefined;
+      const id = child ? `${providerThreadId}:child:${child}` : providerThreadId;
       const session = sessionOf(state, id);
       const added = addedBy(session.total, tokenUsage.total, tokenUsage.last);
       state.sessions[id] = { ...session, total: tokenUsage.total };

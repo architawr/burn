@@ -309,6 +309,7 @@ export function BurnPanel({ threadId, params }: PluginThreadPanelProps): ReactNo
     <div className="flex flex-col gap-4 text-xs" data-testid="burn-panel">
       {prices}
       {report === null ? <WaitingNotice /> : <Kpis answer={answer} report={report} atList={atList} />}
+      {report?.coverageNote ? <p className="text-xs text-warning-text">{report.coverageNote}</p> : null}
       {report?.estimated ? <EstimatedNote /> : null}
       {report?.stoppedAt != null ? <StoppedNotice stoppedAt={report.stoppedAt} budget={budget} /> : null}
       {report !== null ? <Turns report={report} /> : null}

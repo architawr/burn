@@ -79,6 +79,9 @@ export interface DayRow {
 }
 
 export interface UsageReport {
+  /** Limits of the available source, shown alongside its figures. */
+  coverageNote?: string;
+  coverage?: "available" | "partial";
   version: 2;
   startedAt: number;
   updatedAt: number;
