@@ -34,19 +34,21 @@ export function createHostEntry(opts: { dir: string; opencodeDb?: string; openco
 
   /** Watches the session folder from the first call on; a folder that does not exist yet is tried again next call. */
   function ensureWatch(context: Context): Promise<ExperimentalHostWatchSubscription | null> {
-    watch ??= context.experimental_watch({ rootPath: opts.dir, debounceMs: 150, maxWaitMs: 1000 }, (event) => onEvent(event, context)).then(
-      async (subscription) => {
-        if (!context.signal.aborted) return subscription;
-        // bb disposes a watch whose call was cancelled before the watch was ready.
-        watch = null;
-        await subscription.dispose().catch(() => undefined);
-        return null;
-      },
-      () => {
-        watch = null;
-        return null;
-      },
-    );
+    watch ??= context
+      .experimental_watch({ rootPath: opts.dir, debounceMs: 150, maxWaitMs: 1000 }, (event) => onEvent(event, context))
+      .then(
+        async (subscription) => {
+          if (!context.signal.aborted) return subscription;
+          // bb disposes a watch whose call was cancelled before the watch was ready.
+          watch = null;
+          await subscription.dispose().catch(() => undefined);
+          return null;
+        },
+        () => {
+          watch = null;
+          return null;
+        },
+      );
     return watch;
   }
 
@@ -57,9 +59,14 @@ export function createHostEntry(opts: { dir: string; opencodeDb?: string; openco
       reports: async ({ harness, threads, timeZone }, context) => {
         if (harness === "pi") await ensureWatch(context);
         const reports = [];
-        for (const { threadId, sessionIds } of threads) {
+        for (const { threadId, sessionIds, since, parentSessionIds } of threads) {
           context.signal.throwIfAborted();
-          const got = harness === "claude" ? await claude.reportOf(sessionIds, timeZone) : harness === "opencode" ? await opencode.reportOf(sessionIds, timeZone) : await sessions.reportOf(sessionIds, timeZone);
+          const got =
+            harness === "claude"
+              ? await claude.reportOf(sessionIds, timeZone, { since, parentSessionIds })
+              : harness === "opencode"
+                ? await opencode.reportOf(sessionIds, timeZone)
+                : await sessions.reportOf(sessionIds, timeZone);
           reports.push({ threadId, report: got?.report ?? null, at: got?.at ?? null });
         }
         return { dir: opts.dir, reports };

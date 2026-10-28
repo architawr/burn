@@ -22,6 +22,11 @@ interface FileState {
  * Usage belongs to an API message, not each content-block record in the transcript.
  * Keep the newest snapshot for a message; do not deduplicate by token values or UUID.
  */
+interface OwnHistory {
+  since?: number;
+  parentSessionIds?: readonly string[];
+}
+
 export function createClaudeSessions(opts: { dir: string }) {
   const files = new Map<string, FileState>();
   let gate: Promise<unknown> = Promise.resolve();
@@ -146,9 +151,23 @@ export function createClaudeSessions(opts: { dir: string }) {
     if (files.size > 1000) files.delete(files.keys().next().value!);
     return state;
   }
-  async function report(sessionIds: readonly string[], timeZone: string): Promise<{ report: UsageReport; at: number } | null> {
+  async function report(sessionIds: readonly string[], timeZone: string, own: OwnHistory): Promise<{ report: UsageReport; at: number } | null> {
     const roots = await directories(opts.dir);
     const entries = new Map<string, EntryLike>();
+    const inherited = new Set<string>();
+    let missingParent = false;
+    for (const parent of own.parentSessionIds ?? []) {
+      if (!safeId(parent)) continue;
+      let found = false;
+      for (const root of roots) {
+        const state = await read(join(root, parent + ".jsonl"), parent, false);
+        if (!state) continue;
+        found = true;
+        for (const key of state.entries.keys()) inherited.add(key);
+      }
+      if (!found) missingParent = true;
+    }
+    const keep = (key: string, value: EntryLike) => !inherited.has(key) && (own.since === undefined || Date.parse(value.timestamp) >= own.since);
     let at = 0,
       found = 0,
       missing = 0;
@@ -161,13 +180,17 @@ export function createClaudeSessions(opts: { dir: string }) {
         if (!main) continue;
         matched = true;
         found++;
-        for (const [key, value] of main.entries) entries.set(id + ":" + key, value);
+        for (const [key, value] of main.entries) {
+          if (keep(key, value)) entries.set(id + ":" + key, value);
+        }
         at = Math.max(at, main.stamp);
         for (const path of await children(join(root, id, "subagents"))) {
           const sub = await read(path, id, true);
           if (!sub) continue;
           at = Math.max(at, sub.stamp);
-          for (const [key, value] of sub.entries) entries.set(id + ":" + key, value);
+          for (const [key, value] of sub.entries) {
+            if (keep(key, value)) entries.set(id + ":" + key, value);
+          }
         }
       }
       if (!matched) missing++;
@@ -178,15 +201,16 @@ export function createClaudeSessions(opts: { dir: string }) {
       null,
       { timeZone },
     );
-    report.coverage = missing ? "partial" : "available";
-    report.coverageNote = missing
-      ? "Partial Claude transcript history: some session identities are unavailable."
-      : "Claude transcripts include saved subagents. Background calls are grouped by time; deleted or external API logs cannot be recovered.";
+    report.coverage = missing || missingParent ? "partial" : "available";
+    report.coverageNote =
+      missing || missingParent
+        ? "Partial Claude transcript history: some session identities are unavailable."
+        : "Claude transcripts include saved subagents. Background calls are grouped by time; deleted or external API logs cannot be recovered.";
     return { report, at };
   }
   return {
-    reportOf(ids: readonly string[], zone: string) {
-      const run = gate.then(() => report(ids, zone));
+    reportOf(ids: readonly string[], zone: string, own: OwnHistory = {}) {
+      const run = gate.then(() => report(ids, zone, own));
       gate = run.catch(() => undefined);
       return run;
     },

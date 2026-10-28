@@ -86,3 +86,18 @@ describe("Claude transcripts", () => {
     expect(claudeProjectsDir({ CLAUDE_CONFIG_DIR: "/custom" })).toBe("/custom/projects");
   });
 });
+
+it("excludes inherited fork messages even when session ids and copied timestamps were rewritten", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "burn-fork-"));
+  dirs.push(dir);
+  const project = join(dir, "project");
+  mkdirSync(project);
+  const inherited = call("copied");
+  writeFileSync(join(project, "parent.jsonl"), line({ ...inherited, sessionId: "parent" }));
+  writeFileSync(join(project, "session-a.jsonl"), line(inherited) + line(call("own", 4)));
+  const reader = createClaudeSessions({ dir });
+  const got = await reader.reportOf(["session-a"], "UTC", { parentSessionIds: ["parent"], since: Date.parse(timestamp) });
+  expect(got?.report.calls).toBe(1);
+  expect(got?.report.tokens.output).toBe(4);
+  expect((await reader.reportOf(["parent"], "UTC"))?.report.calls).toBe(1);
+});

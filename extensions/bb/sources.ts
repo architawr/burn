@@ -52,6 +52,8 @@ export interface ReportSource {
 
 /** What bb says about a thread: its provider, the machine that keeps its pi logs (null for none, or not pi) and its pi sessions. */
 interface Facts {
+  since?: number;
+  parentSessionIds?: string[];
   at: number;
   hostId: string | null;
   /** null when the lookup failed. */
@@ -125,6 +127,8 @@ export function createReportSource(
 
   /** What the thread row says, however Burn got it: one shared listing, or a call of its own. */
   interface Looked {
+    since?: number;
+    sourceThreadId?: string | null;
     status: string;
     providerId: string;
     environmentId: string | null;
@@ -138,10 +142,26 @@ export function createReportSource(
       const row = await opts.threads.one(threadId);
       return row === null
         ? null
-        : { status: row.status, providerId: row.providerId, environmentId: row.environmentId, hostId: row.hostId, hostKnown: true };
+        : {
+            status: row.status,
+            providerId: row.providerId,
+            environmentId: row.environmentId,
+            hostId: row.hostId,
+            hostKnown: true,
+            sourceThreadId: row.sourceThreadId,
+            since: row.sourceThreadId ? row.createdAt : undefined,
+          };
     }
     const thread = await bb.sdk.threads.get({ threadId });
-    return { status: thread.status, providerId: thread.providerId, environmentId: thread.environmentId, hostId: null, hostKnown: false };
+    return {
+      status: thread.status,
+      providerId: thread.providerId,
+      environmentId: thread.environmentId,
+      hostId: null,
+      hostKnown: false,
+      sourceThreadId: thread.sourceThreadId,
+      since: thread.sourceThreadId ? thread.createdAt : undefined,
+    };
   }
 
   async function lookUp(threadId: string): Promise<Facts> {
@@ -167,7 +187,19 @@ export function createReportSource(
     const sessionIds = [...new Set([...identities, threadId])].slice(-SESSIONS_MAX);
     // Only pi's bridge names its session files after these ids.
     const stems = reader === "pi-log" ? new Set(sessionIds.map(sessionStem)) : new Set<string>();
-    return { at: now(), hostId, providerId: row.providerId, sessionIds, stems };
+    let parentSessionIds: string[] | undefined;
+    if (reader === "claude-log" && row.sourceThreadId) {
+      const parentRows = await bb.sdk.threads.events.list({ threadId: row.sourceThreadId, types: ["thread/identity"] });
+      parentSessionIds = [
+        ...new Set(
+          parentRows.flatMap((r) => {
+            const id = (r.data as { providerThreadId?: unknown }).providerThreadId;
+            return typeof id === "string" ? [id] : [];
+          }),
+        ),
+      ].slice(-32);
+    }
+    return { at: now(), hostId, providerId: row.providerId, sessionIds, stems, since: row.since, parentSessionIds };
   }
 
   /** The lookup under way per thread, so a caller joins it instead of asking bb again. */
@@ -243,7 +275,16 @@ export function createReportSource(
       try {
         answer = await host.call(
           "reports",
-          { harness, timeZone, threads: batch.map((threadId) => ({ threadId, sessionIds: facts.get(threadId)?.sessionIds ?? [threadId] })) },
+          {
+            harness,
+            timeZone,
+            threads: batch.map((threadId) => ({
+              threadId,
+              sessionIds: facts.get(threadId)?.sessionIds ?? [threadId],
+              ...(harness === "claude" && facts.get(threadId)?.since !== undefined ? { since: facts.get(threadId)!.since! } : {}),
+              ...(harness === "claude" && facts.get(threadId)?.parentSessionIds !== undefined ? { parentSessionIds: facts.get(threadId)!.parentSessionIds! } : {}),
+            })),
+          },
           { hostId, timeoutMs: HOST_TIMEOUT_MS },
         );
       } catch (err) {
