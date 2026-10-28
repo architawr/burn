@@ -72,6 +72,7 @@ Threads that are already running show their cost as soon as the bb plugin is ins
 - [Burn in pi](docs/pi.md): the pill, the `/burn` views, commands, and settings.
 - [How Burn works](docs/how-it-works.md): where the numbers come from, and how the two halves talk.
 - [Troubleshooting and limits](docs/troubleshooting.md).
+- [Changelog](CHANGELOG.md): what changed in each release.
 
 ## Development
 
