@@ -21,6 +21,10 @@ import { loadView, type Prices, type SavedView, saveView } from "./view.js";
 
 /** A usage signal arrives per report from every running thread, so refetches wait for a quiet moment. */
 export const REFETCH_DEBOUNCE_MS = 1000;
+/** How long a refresh runs before the page says it is reading, so the warm answer a signal earns never flashes. */
+export const READING_DELAY_MS = 600;
+/** How long the line stays once it is up, so a refresh landing just after the delay does not blink. */
+export const READING_HOLD_MS = 500;
 
 const METRICS: { metric: SpendMetric; label: string }[] = [
   { metric: "cost", label: "Cost" },
@@ -767,20 +771,52 @@ function SkeletonDashboard(): ReactNode {
   );
 }
 
+/** True while `active`, shown once it has lasted `delay` and kept for at least `hold` afterwards. */
+function useHeld(active: boolean, delay: number, hold: number): boolean {
+  const [shown, setShown] = useState(false);
+  const shownAt = useRef(0);
+  useEffect(() => {
+    if (active) {
+      if (shown) return;
+      const timer = setTimeout(() => {
+        shownAt.current = Date.now();
+        setShown(true);
+      }, delay);
+      return () => clearTimeout(timer);
+    }
+    if (!shown) return;
+    const left = hold - (Date.now() - shownAt.current);
+    if (left <= 0) {
+      setShown(false);
+      return;
+    }
+    const timer = setTimeout(() => setShown(false), left);
+    return () => clearTimeout(timer);
+  }, [active, shown, delay, hold]);
+  return shown;
+}
+
 /**
  * A line under the toolbar while an answer is on the way, naming how many threads are still being
- * read. A refresh keeps the figures below it on screen, so the page is usable before the new ones land.
+ * read. A refresh keeps the figures below it on screen, so the page is usable before the new ones
+ * land. Its row is always there, so the panels below it stay put whether or not it has anything to
+ * say, and a refresh that answers as fast as the last one never shows it at all.
  */
-function LoadProgress({ loading, reading }: { loading: boolean; reading: number }): ReactNode {
-  if (!loading && reading <= 0) return null;
-  const words =
-    reading > 0 ? `Still reading ${reading.toLocaleString("en-US")} ${reading === 1 ? "thread" : "threads"}…` : "Loading spend…";
+function LoadProgress({ loading, first, reading }: { loading: boolean; first: boolean; reading: number }): ReactNode {
+  // Nothing on screen yet, so the line needs no hold: it goes the moment the first answer lands.
+  const busy = useHeld(loading && !first, READING_DELAY_MS, READING_HOLD_MS);
   return (
-    <div role="status" aria-live="polite" data-testid="load-progress" className="flex items-center gap-2.5 text-xs text-muted-foreground">
-      <span className="relative h-1 w-28 shrink-0 overflow-hidden rounded-full bg-state-hover">
-        <span data-burn-shimmer="" className="pointer-events-none absolute inset-0" />
-      </span>
-      {words}
+    <div data-testid="reading-slot" className="h-4">
+      {first || reading > 0 || busy ? (
+        <div role="status" aria-live="polite" data-testid="load-progress" className="flex h-4 items-center gap-2.5 text-xs text-muted-foreground">
+          <span className="relative h-1 w-28 shrink-0 overflow-hidden rounded-full bg-state-hover">
+            <span data-burn-shimmer="" className="pointer-events-none absolute inset-0" />
+          </span>
+          {reading > 0
+            ? `Still reading ${reading.toLocaleString("en-US")} ${reading === 1 ? "thread" : "threads"}…`
+            : "Loading spend…"}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -856,20 +892,22 @@ export function SpendPage({ subPath }: PluginNavPanelProps): ReactNode {
   return (
     <div className="h-full overflow-y-auto p-4 md:p-5">
       <div className="mx-auto w-full max-w-4xl space-y-5 text-foreground" aria-busy={loading || (data?.reading ?? 0) > 0}>
-        <Toolbar
-          nav={<PeriodNav period={period} today={today} onGo={go} />}
-          metric={metric}
-          onMetric={(next) => remember({ metric: next })}
-          range={range}
-          onRange={chooseRange}
-          zone={zone}
-          onZone={(next) => remember({ tz: next })}
-          projectId={projectId}
-          onProject={(next) => remember({ projectId: next })}
-          options={data?.projectOptions ?? []}
-          panels={panels}
-        />
-        <LoadProgress loading={loading} reading={data?.reading ?? 0} />
+        <div className="space-y-1.5">
+          <Toolbar
+            nav={<PeriodNav period={period} today={today} onGo={go} />}
+            metric={metric}
+            onMetric={(next) => remember({ metric: next })}
+            range={range}
+            onRange={chooseRange}
+            zone={zone}
+            onZone={(next) => remember({ tz: next })}
+            projectId={projectId}
+            onProject={(next) => remember({ projectId: next })}
+            options={data?.projectOptions ?? []}
+            panels={panels}
+          />
+          <LoadProgress loading={loading} first={data === null && loading} reading={data?.reading ?? 0} />
+        </div>
         {body}
       </div>
     </div>

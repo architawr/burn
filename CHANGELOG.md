@@ -2,6 +2,16 @@
 
 Notable changes to Burn, newest first. Burn follows [semantic versioning](https://semver.org). Releases from 0.4.0 on are tagged `vX.Y.Z` in this repository; earlier versions were not tagged. Each release's commit message has the full detail, including how the release was checked.
 
+## 0.8.1 - 2026-10-28
+
+The Burn page stopped jumping. Every usage signal from a running thread refetches the page, and each refetch put the "Loading spend…" line back into the page's flow, pushing the cost cards, the chart and every panel below them down 36 pixels and pulling them up again a moment later. With a few threads working, the page moved every few seconds.
+
+- **The line's row is always there.** It now holds its 16 pixels whether or not it has anything to say, so nothing below it moves when it appears.
+- **It waits before it speaks.** The line appears only once a refresh has run for 600 ms, and stays for at least 500 ms once up, so the warm answer a usage signal earns — a fraction of a second over a warm cache — never flashes a line that is taken back at once. The first load is unchanged: the placeholders and the line paint together.
+- **"Still reading N threads" still shows** whenever the answer left threads unread, and goes as soon as a later answer has nothing left to read.
+
+A live check on this machine's data (572 threads, 7 days) drove seven refetches over 23 seconds while sampling the cost cards' position every 50 ms: before, the first card's top alternated between 167 and 203 pixels with 14 moves; after, it stayed at 189 pixels. Settings, stored keys and the plugin database's tables are the same as in 0.8.0.
+
 ## 0.8.0 - 2026-10-28
 
 The Burn page opens quickly again when you have many threads. With 1,245 threads, a cold 30-day page took 6.8 seconds and showed only a bare "Loading spend…" box meanwhile.

@@ -4,7 +4,7 @@ import { act, fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { SPEND_PANELS, type SpendMetric, type SpendOutput, type SpendPanel, type SpendRange, type SpendZone, type spendMethods } from "../../extensions/bb/spend/contract.js";
 import { dayDate, localDays } from "../../extensions/bb/spend/days.js";
-import { REFETCH_DEBOUNCE_MS, SpendPage } from "../../extensions/bb/spend/page.js";
+import { READING_DELAY_MS, READING_HOLD_MS, REFETCH_DEBOUNCE_MS, SpendPage } from "../../extensions/bb/spend/page.js";
 import { PANELS } from "../../extensions/bb/spend/panels.js";
 import { loadView, VIEW_KEY } from "../../extensions/bb/spend/view.js";
 
@@ -499,6 +499,7 @@ describe("Spend page", () => {
     );
     expect(slot.getByText("Loading spend…")).toBeTruthy();
     expect(await slot.findByText("Could not load spend: bb is restarting")).toBeTruthy();
+    expect(slot.queryByTestId("load-progress")).toBeNull();
     fail = false;
     fireEvent.click(slot.getByRole("button", { name: "Try again" }));
     expect(await slot.findByText("$97.40")).toBeTruthy();
@@ -525,9 +526,31 @@ describe("Spend page", () => {
     expect(slot.queryByTestId("load-progress")).toBeNull();
     fireEvent.click(within(slot.getByRole("group", { name: "Show" })).getByRole("button", { name: "Tokens" }));
     expect(slot.getByText("$97.40")).toBeTruthy();
-    expect(slot.getByTestId("load-progress")).toBeTruthy();
+    expect(await slot.findByTestId("load-progress", undefined, { timeout: READING_DELAY_MS + 1000 })).toBeTruthy();
     await act(async () => resolve(output("7d", { metric: "tokens" })));
-    await waitFor(() => expect(slot.queryByTestId("load-progress")).toBeNull());
+    await waitFor(() => expect(slot.queryByTestId("load-progress")).toBeNull(), { timeout: READING_HOLD_MS + 1000 });
+  });
+
+  it("holds the line's row, so a refresh never moves the panels below it", async () => {
+    let resolve: (value: SpendOutput) => void = () => undefined;
+    const slot = render(
+      backend((input) => (input.metric === "tokens" ? new Promise<SpendOutput>((r) => (resolve = r)) : output(input.range))),
+    );
+    await slot.findByText("$97.40");
+    const row = slot.getByTestId("reading-slot");
+
+    fireEvent.click(within(slot.getByRole("group", { name: "Show" })).getByRole("button", { name: "Tokens" }));
+    // A warm refresh answers faster than READING_DELAY_MS, so it never flashes a line the page would take back at once.
+    expect(slot.queryByTestId("load-progress")).toBeNull();
+    expect(slot.getByTestId("reading-slot")).toBe(row);
+
+    expect(await slot.findByTestId("load-progress", undefined, { timeout: READING_DELAY_MS + 1000 })).toBeTruthy();
+    expect(slot.getByTestId("reading-slot")).toBe(row);
+
+    await act(async () => resolve(output("7d", { metric: "tokens" })));
+    await waitFor(() => expect(slot.queryByTestId("load-progress")).toBeNull(), { timeout: READING_HOLD_MS + 1000 });
+    // The same row is still there, so the panels below did not move when the line went.
+    expect(slot.getByTestId("reading-slot")).toBe(row);
   });
 
   it("refetches once after a burst of usage signals, and after a reconnect", async () => {
