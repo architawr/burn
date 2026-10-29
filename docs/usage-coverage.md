@@ -4,8 +4,6 @@
 
 Native subagents can run inside one provider session. BB workflows instead spawn hidden worker threads with `lifecycleOwnerThreadId`; this is distinct from `parentThreadId`. BB's descendants API currently traverses parentage only. Burn extends the returned family over both edges, including nested workers and workers' ordinary children, with deduplication and cycle protection. The global Spend report continues to sum each thread's own report once. Native transcript calls belong to that own report and are not added again as BB worker reports.
 
-A replayed workflow call does not create another worker or another usage record. Real retry attempts that create additional workers remain separate spend. This patch does not change workflow execution or retry policy.
-
 ## Sources
 
 | Harness | Source and verification | Remaining limits |
@@ -28,10 +26,6 @@ Transcript usage preserves each call's model, input, output, cache reads and cac
 
 Claude host reads run on BB event/status invalidation and the report TTL; they are not an independent filesystem watch, so a background task that produces no BB event can appear on the next refresh. Incomplete final JSONL lines wait for their newline. Truncation, replacement and a changed first line invalidate the file cursor. Only extracted usage and short prompt excerpts are cached, not tool-output bodies.
 
-## Validation
+## Reading native-agent spend
 
-The test suite covers the new reader, recursive workflow paths, duplicate snapshots, appended partial JSONL, unknown models, one-hour cache writes, copied fork history, rewritten files, host/event fallback, preserving saved history, lifecycle ownership, and interleaved Codex child counters. Existing OpenCode, Pi/API usage, budget, report and frontend suites remain in the full run.
-
-On Node 26, run browser tests with `NODE_OPTIONS=--no-experimental-webstorage npm test`; otherwise Node's global Web Storage conflicts with jsdom in the existing suite. Typecheck uses the repository's pinned SDK. `bb plugin build` also checks the installed BB build pipeline; existing SDK-version and retired-slot warnings are outside this patch.
-
-The live checks call the patched reader/ledger/family functions against actual provider data. They do not claim a screenshot-based frontend test. A subsequent local installation was verified through the real Burn usage RPC on five existing chats, including parent/workflow family attribution with copied-history exclusion. The Codex comparison chat received new usage during the measurement window, so its before/after delta is not attributed to this patch. Real private transcripts and temporary audit tests are not included in the PR.
+This thread includes its own native subagents. With children includes each distinct descendant once. The native-agent figure is a subset of those totals, never an additional charge. The popover shows this thread's subagents; the side panel contains the calculation and expandable rows under each displayed thread. Family aggregation includes workers beyond the 50-child display cap, but sends only an aggregate for that subset.

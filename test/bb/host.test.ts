@@ -1,11 +1,11 @@
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExperimentalHostWatchListener, ExperimentalHostWatchOptions } from "@get-bb/plugin-sdk";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
 import { afterEach, describe, expect, it } from "vitest";
 import { CHANGED_MAX } from "../../extensions/bb/host/contract.js";
-import hostEntry, { createHostEntry } from "../../extensions/bb/host/entry.js";
+import hostEntry, { createHostEntry, realDir } from "../../extensions/bb/host/entry.js";
 import { createPiSessions, sessionDir, sessionFile } from "../../extensions/bb/host/pi-sessions.js";
 import { assistant, toolResult, user } from "../helpers.js";
 
@@ -173,14 +173,38 @@ describe("createPiSessions", () => {
   });
 });
 
+describe("realDir", () => {
+  // A machine can link ~/.bb elsewhere, and a file watcher can refuse a root reached through a link.
+  function linked() {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "burn-real-")));
+    dirs.push(base);
+    mkdirSync(join(base, "elsewhere", "bb"), { recursive: true });
+    symlinkSync(join(base, "elsewhere", "bb"), join(base, ".bb"));
+    return base;
+  }
+
+  it("resolves a folder reached through a symlinked parent", async () => {
+    const base = linked();
+    mkdirSync(join(base, "elsewhere", "bb", "pi-bridge-sessions"));
+    expect(await realDir(join(base, ".bb", "pi-bridge-sessions"))).toBe(join(base, "elsewhere", "bb", "pi-bridge-sessions"));
+  });
+
+  it("resolves the parent of a folder that does not exist yet", async () => {
+    const base = linked();
+    expect(await realDir(join(base, ".bb", "pi-bridge-sessions"))).toBe(join(base, "elsewhere", "bb", "pi-bridge-sessions"));
+    expect(await realDir(join(base, "none", "deeper"))).toBe(join(base, "none", "deeper"));
+  });
+});
+
 describe("host entry", () => {
   const THREAD = "thr_aaaaaaaa";
 
-  function harness(opts: { failWatch?: number } = {}) {
+  function harness(opts: { failWatch?: number; neverReady?: boolean; watchWaitMs?: number } = {}) {
     const s = setup();
     const watches: { options: ExperimentalHostWatchOptions; listener: ExperimentalHostWatchListener; disposed: boolean }[] = [];
     let failures = opts.failWatch ?? 0;
-    const h = experimental_createHostEntryHarness(createHostEntry({ dir: s.dir }), {
+    const entry = createHostEntry({ dir: s.dir, ...(opts.watchWaitMs === undefined ? {} : { watchWaitMs: opts.watchWaitMs }) });
+    const h = experimental_createHostEntryHarness(entry, {
       experimental_watch: (options, listener) => {
         if (failures > 0) {
           failures--;
@@ -188,6 +212,8 @@ describe("host entry", () => {
         }
         const watch = { options, listener, disposed: false };
         watches.push(watch);
+        // bb answers a watch only once its root is watched, which can be never.
+        if (opts.neverReady) return new Promise(() => undefined);
         return { dispose: async () => void (watch.disposed = true) };
       },
     });
@@ -207,7 +233,7 @@ describe("host entry", () => {
     expect(got.reports[0]).toMatchObject({ threadId: THREAD, at: expect.any(Number) });
     expect(got.reports[0]?.report?.cost.total).toBeCloseTo(2.5);
     expect((await t.reports(["pi_none"])).reports).toEqual([{ threadId: THREAD, report: null, at: null }]);
-    expect(t.watches.map((w) => w.options)).toEqual([{ rootPath: t.dir, ignoredPaths: [], debounceMs: 150, maxWaitMs: 1000 }]);
+    expect(t.watches.map((w) => w.options)).toEqual([{ rootPath: realpathSync(t.dir), ignoredPaths: [], debounceMs: 150, maxWaitMs: 1000 }]);
     await t.h.experimental_dispose();
   });
 
@@ -255,6 +281,18 @@ describe("host entry", () => {
     await t.reports();
     expect(t.watches).toHaveLength(2);
     expect(t.signals()).toEqual([]);
+    await t.h.experimental_dispose();
+  });
+
+  it("answers at once when bb never gets the watch ready, and starts no second watch", async () => {
+    const t = harness({ neverReady: true, watchWaitMs: 20 });
+    t.write("pi_one", [user(), assistant(1.5)]);
+    expect((await t.reports()).reports[0]?.report?.cost.total).toBeCloseTo(1.5);
+    await t.watches[0]!.listener({ kind: "watch-error", message: "Watched path does not exist yet" });
+    t.write("pi_one", [user(), assistant(1.5), user(), assistant(2)]);
+    expect((await t.reports()).reports[0]?.report?.cost.total).toBeCloseTo(3.5);
+    // bb keeps retrying a watch that is not ready yet, so another would only pile up beside it.
+    expect(t.watches).toHaveLength(1);
     await t.h.experimental_dispose();
   });
 

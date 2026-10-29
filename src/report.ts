@@ -79,6 +79,8 @@ export interface DayRow {
 }
 
 export interface AgentUsage {
+  /** Number of native agents when rows contains only a family aggregate. */
+  count?: number;
   coverage: "available" | "partial";
   rows: { id: string; calls: number; cost: CostParts; estimated: boolean }[];
 }

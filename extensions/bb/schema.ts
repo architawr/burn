@@ -21,6 +21,7 @@ const count = z.number().int().nonnegative();
 const key = z.string().max(200);
 const cost = z.object({ input: amount, output: amount, cacheRead: amount, cacheWrite: amount, total: amount });
 export const agentUsageSchema = z.object({
+  count: count.optional(),
   coverage: z.enum(["available", "partial"]),
   rows: z.array(z.object({id: key, calls: count, cost, estimated: z.boolean()})),
 });

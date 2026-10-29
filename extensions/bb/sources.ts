@@ -437,7 +437,7 @@ export function createReportSource(
               report: {
                 ...fallback.report,
                 coverage: "partial",
-                coverageNote: "Limited coverage: Claude transcripts unavailable; BB events can omit subagents and earlier turns.",
+                coverageNote: "Limited coverage: saved history is unavailable; some subagent usage and earlier turns may be missing.",
               },
             });
         }

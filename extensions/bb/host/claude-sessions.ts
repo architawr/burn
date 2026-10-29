@@ -164,6 +164,10 @@ export function createClaudeSessions(opts: { dir: string }) {
         if (!state) continue;
         found = true;
         for (const key of state.entries.keys()) inherited.add(key);
+        for (const path of await children(join(root, parent, "subagents"))) {
+          const sub = await read(path, parent, true);
+          if (sub) for (const key of sub.entries.keys()) inherited.add(key);
+        }
       }
       if (!found) missingParent = true;
     }
@@ -205,8 +209,8 @@ export function createClaudeSessions(opts: { dir: string }) {
     report.coverage = missing || missingParent ? "partial" : "available";
     report.coverageNote =
       missing || missingParent
-        ? "Partial Claude transcript history: some session identities are unavailable."
-        : "Claude transcripts include saved subagents. Background calls are grouped by time; deleted or external API logs cannot be recovered.";
+        ? "Partial saved history: some session or subagent history is unavailable."
+        : "Saved history includes subagents. Background calls are grouped by time; deleted or external API logs cannot be recovered.";
     return { report, at };
   }
   return {

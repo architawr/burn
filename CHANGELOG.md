@@ -2,6 +2,36 @@
 
 Notable changes to Burn, newest first. Burn follows [semantic versioning](https://semver.org). Releases from 0.4.0 on are tagged `vX.Y.Z` in this repository; earlier versions were not tagged. Each release's commit message has the full detail, including how the release was checked.
 
+## 0.8.3 - 2026-10-29
+
+pi threads on machines where `~/.bb` is a symlink show their cost again. On such a machine, bb's file watcher can refuse to watch a folder reached through a symlink. Burn's host entry waited for its watch on `~/.bb/pi-bridge-sessions` before it answered, bb never reported that watch as ready, and so every read on that machine ran into bb's 25-second deadline. Those threads showed no cost, or the last figures Burn had kept.
+
+- **Burn watches the session folder's real path.** It resolves every symlink first, including a symlinked parent of a folder pi has not created yet.
+- **A read waits at most a second for the watch.** The figures come from the session logs, not the watch, so a watch bb cannot start no longer holds them back.
+- **An error from a watch that is not ready yet no longer starts a second watch**, because bb keeps retrying the first one on its own.
+
+Checked live on fresh remote machines with a symlinked `~/.bb`: the chip of a pi thread there rose with each model call while it ran, and neither the machine's daemon log nor Burn's log had a deadline error. Four pi threads on other such machines, which Burn had never read, got their figures within seconds of the install. Settings, stored keys and the plugin database's tables are the same as in 0.8.2.
+
+## 0.8.2 - 2026-10-28
+
+Burn's settings survive removing and reinstalling the plugin. bb deletes a plugin's settings when the plugin is removed — `bb plugin update` keeps them, `bb plugin remove` does not — and Burn had no copy of its own, so a reinstall came back with no daily budget, no discount and every other choice at its default.
+
+- **Burn keeps its own copy of its settings**, in its storage, which bb leaves alone when the plugin is removed. It writes the copy at every load and after every change, so it always matches what bb holds.
+- **The copy goes back on the next load**, for each setting bb reports at its default while the copy holds something else. A setting bb holds a value for is never overwritten: if you changed it while the plugin was off, your newer value wins.
+- **A setting you set back to its default stays there.** The copy records the default too, so resetting the discount to 0 is a choice Burn keeps, not a loss to restore.
+
+Settings, stored keys and the plugin database's tables are the same as in 0.8.1.
+
+## 0.8.1 - 2026-10-28
+
+The Burn page stopped jumping. Every usage signal from a running thread refetches the page, and each refetch put the "Loading spend…" line back into the page's flow, pushing the cost cards, the chart and every panel below them down 36 pixels and pulling them up again a moment later. With a few threads working, the page moved every few seconds.
+
+- **The line's row is always there.** It now holds its 16 pixels whether or not it has anything to say, so nothing below it moves when it appears.
+- **It waits before it speaks.** The line appears only once a refresh has run for 600 ms, and stays for at least 500 ms once up, so the warm answer a usage signal earns — a fraction of a second over a warm cache — never flashes a line that is taken back at once. The first load is unchanged: the placeholders and the line paint together.
+- **"Still reading N threads" still shows** whenever the answer left threads unread, and goes as soon as a later answer has nothing left to read.
+
+A live check on this machine's data (572 threads, 7 days) drove seven refetches over 23 seconds while sampling the cost cards' position every 50 ms: before, the first card's top alternated between 167 and 203 pixels with 14 moves; after, it stayed at 189 pixels. Settings, stored keys and the plugin database's tables are the same as in 0.8.0.
+
 ## 0.8.0 - 2026-10-28
 
 The Burn page opens quickly again when you have many threads. With 1,245 threads, a cold 30-day page took 6.8 seconds and showed only a bare "Loading spend…" box meanwhile.

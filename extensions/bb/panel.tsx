@@ -14,7 +14,7 @@ import {
   usageLabel,
 } from "../../src/format.js";
 import { outputPerSec, reportOutputPerSec, type TurnRow, type UsageReport } from "../../src/report.js";
-import { AgentRows, agentLabel } from "./agents.js";
+import { AgentRows, CostBreakdown, agentLabel } from "./agents.js";
 import { BudgetEditor } from "./budget-editor.js";
 import { BudgetStatus, CopyAction, EstimatedNote, Label, Models, StoppedNotice, WaitingNotice, WhereItWent } from "./card.js";
 import { MiniBars } from "./charts.js";
@@ -51,7 +51,7 @@ function Kpis({ answer, report, atList }: { answer: UsageAnswer; report: UsageRe
   const share = budget !== null && !tokenOnly ? `${Math.round((own / budget.amount) * 100)}% of ${formatBudget(budget.amount)} budget` : "No budget";
   return (
     <div className="grid grid-cols-[repeat(auto-fit,minmax(8.5rem,1fr))] gap-2" data-testid="kpis">
-      <Kpi label="This thread" value={usageLabel(report)} sub={atList ? "At list price" : share} />
+      <CostBreakdown answer={answer}><Kpi label="This thread" value={usageLabel(report)} sub={atList ? "At list price" : share} /></CostBreakdown>
       {kids > 0 ? (
         <Kpi
           label={`With ${kids} ${kids === 1 ? "child" : "children"}`}
@@ -61,7 +61,7 @@ function Kpis({ answer, report, atList }: { answer: UsageAnswer; report: UsageRe
       ) : (
         <Kpi label="Children" value="None" sub="No child thread has reported" />
       )}
-      <Kpi label="With agents" value={agentLabel(family.agents)} sub={family.agents?.rows.length ? `${family.agents.rows.length} subagents · part of the totals above${family.agents.coverage === "partial" ? " · partial" : ""}` : family.agents?.coverage === "available" ? "No saved subagent usage" : "Source has no complete agent breakdown"} />
+      <Kpi label="With agents" value={agentLabel(family.agents)} sub={family.agents?.rows.length ? `${family.agents.count ?? family.agents.rows.length} subagents · part of the totals above${family.agents.coverage === "partial" ? " · partial" : ""}` : family.agents?.coverage === "available" ? "No saved subagent usage" : "Source has no complete agent breakdown"} />
       <Kpi
         label="Per call"
         value={report.calls > 0 && !tokenOnly ? formatAmount(own / report.calls, report.estimated) : "—"}

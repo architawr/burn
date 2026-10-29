@@ -112,3 +112,17 @@ it("exposes native spend as a subset, with stable ids across reads", async () =>
   expect(got?.report.agents?.rows[0]?.calls).toBe(1);
   expect(got!.report.agents!.rows[0]!.cost.total).toBeLessThan(got!.report.cost.total);
 });
+
+it("excludes copied parent subagent snapshots even with rewritten timestamps", async () => {
+  const s = setup();
+  const parentSubs = join(s.project, 'parent', 'subagents', 'nested');
+  mkdirSync(parentSubs, { recursive: true });
+  writeFileSync(join(s.project, 'parent.jsonl'), line({...call('parent-main'), sessionId:'parent'}));
+  writeFileSync(join(parentSubs, 'agent-parent.jsonl'), line({...call('copied-native', 99), sessionId:'parent'}));
+  writeFileSync(s.main, line(call('own-main', 4)));
+  writeFileSync(s.sub, line({...call('copied-native', 99), timestamp:'2026-10-28T12:00:00Z'}) + line(call('own-native', 7)));
+  const got = await s.reader.reportOf(['session-a'], 'UTC', {parentSessionIds:['parent']});
+  expect(got?.report.calls).toBe(2);
+  expect(got?.report.tokens.output).toBe(11);
+  expect(got?.report.agents?.rows).toHaveLength(1);
+});
