@@ -2,6 +2,16 @@
 
 Notable changes to Burn, newest first. Burn follows [semantic versioning](https://semver.org). Releases from 0.4.0 on are tagged `vX.Y.Z` in this repository; earlier versions were not tagged. Each release's commit message has the full detail, including how the release was checked.
 
+## 0.8.3 - 2026-10-29
+
+pi threads on machines where `~/.bb` is a symlink show their cost again. On such a machine, bb's file watcher can refuse to watch a folder reached through a symlink. Burn's host entry waited for its watch on `~/.bb/pi-bridge-sessions` before it answered, bb never reported that watch as ready, and so every read on that machine ran into bb's 25-second deadline. Those threads showed no cost, or the last figures Burn had kept.
+
+- **Burn watches the session folder's real path.** It resolves every symlink first, including a symlinked parent of a folder pi has not created yet.
+- **A read waits at most a second for the watch.** The figures come from the session logs, not the watch, so a watch bb cannot start no longer holds them back.
+- **An error from a watch that is not ready yet no longer starts a second watch**, because bb keeps retrying the first one on its own.
+
+Checked live on fresh remote machines with a symlinked `~/.bb`: the chip of a pi thread there rose with each model call while it ran, and neither the machine's daemon log nor Burn's log had a deadline error. Four pi threads on other such machines, which Burn had never read, got their figures within seconds of the install. Settings, stored keys and the plugin database's tables are the same as in 0.8.2.
+
 ## 0.8.2 - 2026-10-28
 
 Burn's settings survive removing and reinstalling the plugin. bb deletes a plugin's settings when the plugin is removed — `bb plugin update` keeps them, `bb plugin remove` does not — and Burn had no copy of its own, so a reinstall came back with no daily budget, no discount and every other choice at its default.
