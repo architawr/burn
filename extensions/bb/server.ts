@@ -9,7 +9,7 @@ import { ALERT_CHANNEL } from "./alerts.js";
 import { effectiveBudget, type OwnBudget, policyFor, positiveOrNull } from "./budgets.js";
 import { BUDGET_MAX, type CostRow, type Family, rpcContract } from "./contract.js";
 import { createThreadDirectory, type ThreadRow } from "./directory.js";
-import { budgetKey, logKey, REPORT_PREFIX, reportKey, stoppedKey } from "./keys.js";
+import { budgetKey, logKey, REPORT_PREFIX, reportKey, SETTINGS_COPY_KEY, stoppedKey } from "./keys.js";
 import { alertEvents, alertFor } from "./notify.js";
 import { discountsOf } from "./prefs.js";
 import { type Stored, storedSchema, usageEnvelopeSchema } from "./schema.js";
@@ -138,6 +138,27 @@ const stoppedSchema = z.object({ at: z.number() });
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
+const sameSetting = (a: unknown, b: unknown): boolean => (a ?? null) === (b ?? null);
+
+/**
+ * The settings to put back after bb forgot them. bb deletes a plugin's settings
+ * when the plugin is removed, so Burn keeps its own copy in its storage, which
+ * survives. A value the copy holds while bb reports the setting's default was
+ * lost that way and goes back; a value bb holds of its own — what the user set
+ * while the plugin was off — is left alone.
+ */
+export function settingsToRestore(copy: Record<string, unknown>, effective: Record<string, unknown>): Record<string, string | number | boolean> {
+  const out: Record<string, string | number | boolean> = {};
+  for (const [key, was] of Object.entries(copy)) {
+    // A setting Burn no longer declares, or one nobody ever set, has nothing to put back.
+    if (!(key in SETTINGS)) continue;
+    if (typeof was !== "string" && typeof was !== "number" && typeof was !== "boolean") continue;
+    const fallback = (SETTINGS as Record<string, { default?: unknown }>)[key]?.default ?? null;
+    if (!sameSetting(was, fallback) && sameSetting(effective[key], fallback)) out[key] = was;
+  }
+  return out;
+}
+
 /** Keeps `map` to the `max` most recently set keys. */
 function remember<V>(map: Map<string, V>, key: string, value: V, max = MAX_THREADS): void {
   map.delete(key);
@@ -168,6 +189,29 @@ type Pinned = { threadId: string; stored: Stored };
 
 export default async function plugin(bb: BbPluginApi): Promise<void> {
   const settings = bb.settings.define(SETTINGS);
+  // bb deletes a plugin's settings when the plugin is removed, so Burn keeps its own copy in its storage, which survives.
+  const keepSettings = async (values: Record<string, unknown>): Promise<void> => {
+    try {
+      await bb.storage.kv.set(SETTINGS_COPY_KEY, values);
+    } catch (err) {
+      bb.log.warn(`keeping a copy of Burn's settings failed: ${message(err)}`);
+    }
+  };
+  settings.onChange((next) => void keepSettings(next));
+  const kept = await bb.storage.kv.get<Record<string, unknown>>(SETTINGS_COPY_KEY);
+  if (kept !== undefined) {
+    const lost = settingsToRestore(kept, await settings.get());
+    const keys = Object.keys(lost);
+    if (keys.length > 0) {
+      try {
+        await settings.experimental_set(lost as Parameters<typeof settings.experimental_set>[0]);
+        bb.log.info(`put back ${keys.join(", ")}, which bb forgot when the plugin was removed`);
+      } catch (err) {
+        bb.log.warn(`putting back the settings bb forgot with the plugin failed: ${message(err)}`);
+      }
+    }
+  }
+  await keepSettings(await settings.get());
   // Every thread's row, shared by the report source, the sidebar flags and the Burn page, so none of them asks bb per thread.
   const directory = createThreadDirectory(bb);
   // null: the thread has no stored report, so it is not read from KV again.

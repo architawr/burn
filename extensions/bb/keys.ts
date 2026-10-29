@@ -14,3 +14,6 @@ export const stoppedKey = (threadId: string): string => `stopped:${threadId}`;
 
 /** Which Burn page panels are hidden: { hidden: SpendPanel[] }. */
 export const SPEND_PANELS_KEY = "spend-panels";
+
+/** Burn's own copy of its settings, which bb's settings store does not survive a plugin removal: `Record<setting, value>`. */
+export const SETTINGS_COPY_KEY = "settings-copy";

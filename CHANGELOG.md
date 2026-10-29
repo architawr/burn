@@ -2,6 +2,16 @@
 
 Notable changes to Burn, newest first. Burn follows [semantic versioning](https://semver.org). Releases from 0.4.0 on are tagged `vX.Y.Z` in this repository; earlier versions were not tagged. Each release's commit message has the full detail, including how the release was checked.
 
+## 0.8.2 - 2026-10-28
+
+Burn's settings survive removing and reinstalling the plugin. bb deletes a plugin's settings when the plugin is removed — `bb plugin update` keeps them, `bb plugin remove` does not — and Burn had no copy of its own, so a reinstall came back with no daily budget, no discount and every other choice at its default.
+
+- **Burn keeps its own copy of its settings**, in its storage, which bb leaves alone when the plugin is removed. It writes the copy at every load and after every change, so it always matches what bb holds.
+- **The copy goes back on the next load**, for each setting bb reports at its default while the copy holds something else. A setting bb holds a value for is never overwritten: if you changed it while the plugin was off, your newer value wins.
+- **A setting you set back to its default stays there.** The copy records the default too, so resetting the discount to 0 is a choice Burn keeps, not a loss to restore.
+
+Settings, stored keys and the plugin database's tables are the same as in 0.8.1.
+
 ## 0.8.1 - 2026-10-28
 
 The Burn page stopped jumping. Every usage signal from a running thread refetches the page, and each refetch put the "Loading spend…" line back into the page's flow, pushing the cost cards, the chart and every panel below them down 36 pixels and pulling them up again a moment later. With a few threads working, the page moved every few seconds.
