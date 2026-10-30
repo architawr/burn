@@ -486,10 +486,17 @@ it("refreshes and animates the family delta when only a known child reports", as
  expect(server.callsTo('usage')).toHaveLength(2);
 });
 
-it("keeps the popover a quick overview without a calculation tooltip", async () => {
- const slot = await renderChip(backend());
+it("opens the own-thread calculation explicitly inside the chip popover", async () => {
+ const current = answer();
+ current.report!.agents={coverage:'available',rows:[{id:'native',calls:1,cost:{input:1,output:0,cacheRead:0,cacheWrite:0,total:1},estimated:false}]};
+ const slot = await renderChip(backend(()=>current));
  const card = await openCard(slot);
- expect(card.queryByRole('button', {name:'Cost calculation'})).toBeNull();
+ const calculation = card.getByRole('button', {name:'Cost calculation'});
+ await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+ expect(card.queryByRole('tooltip')).toBeNull();
+ fireEvent.focus(calculation);
+ expect(card.getByRole('tooltip').textContent).toContain('This thread$4.82');
+ fireEvent.keyDown(calculation, {key:'Escape'});
  expect(card.queryByRole('tooltip')).toBeNull();
  expect(card.getByTestId('agents-line').textContent).not.toContain('children');
 });

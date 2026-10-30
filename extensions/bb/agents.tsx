@@ -1,5 +1,5 @@
 import { useId, useState, type ReactNode } from "react";
-import { formatAmount, formatUsd, isTokenOnly } from "../../src/format.js";
+import { formatAmount, isTokenOnly } from "../../src/format.js";
 import type { AgentUsage } from "../../src/report.js";
 import type { UsageAnswer } from "./contract.js";
 
@@ -24,27 +24,34 @@ export function AgentRows({ agents }: { agents?: AgentUsage }): ReactNode {
   </details>;
 }
 
-/** Both scopes are explicit: the headline is this thread, the family total is separate. */
-export function CostBreakdown({ answer, children }: { answer: UsageAnswer; children: ReactNode }): ReactNode {
+/** The chip connects both totals; detail cards explain their respective amounts. */
+export function CostBreakdown({ answer, children, scope = "combined" }: { answer: UsageAnswer; children: ReactNode; scope?: "thread" | "family" | "combined" }): ReactNode {
   const [open, setOpen] = useState(false);
   const id = useId();
   const { report, family } = answer;
   if (!report || isTokenOnly(report)) return children;
+  const hasOwnAgents = !!report.agents?.rows.length;
+  const hasChildren = family.children.length > 0;
+  const canExpand = scope === "thread" ? hasOwnAgents : scope === "family" ? hasChildren : hasOwnAgents || hasChildren;
+  if (!canExpand) return children;
   const ownAgents = agentTotal(report.agents);
-  const allAgents = agentTotal(family.agents);
-  const known = report.agents !== undefined && family.agents?.coverage === "available";
   const row = (label: string, value: string) => <div className="flex justify-between gap-3 py-0.5"><span>{label}</span><b className="shrink-0 font-medium tabular-nums">{value}</b></div>;
   return <span className="relative inline-flex" onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
-    <button type="button" className="cursor-help text-left underline decoration-dotted decoration-muted-foreground decoration-1 underline-offset-[5px] hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm" aria-label="Cost calculation" aria-expanded={open} aria-describedby={open ? id : undefined} onFocus={() => setOpen(true)} onBlur={() => setOpen(false)} onClick={() => setOpen(true)} onKeyDown={e => {if(e.key === "Escape") {e.stopPropagation();setOpen(false);}}}>{children}</button>
+    <button type="button" className="cursor-help text-left underline decoration-dotted decoration-muted-foreground decoration-1 underline-offset-[5px] hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm" aria-label={scope === "family" ? "Family cost calculation" : "Cost calculation"} aria-expanded={open} aria-describedby={open ? id : undefined} onFocus={() => setOpen(true)} onBlur={() => setOpen(false)} onClick={() => setOpen(true)} onKeyDown={e => {if(e.key === "Escape") {e.stopPropagation();setOpen(false);}}}>{children}</button>
     {open ? <span role="tooltip" id={id} className="absolute top-full left-0 z-50 mt-1 block w-[284px] max-w-[calc(100vw-48px)] rounded-lg border border-border bg-popover p-3 text-xs font-normal tracking-normal text-popover-foreground shadow-lg" data-testid="cost-breakdown">
-      <b className="mb-1 block font-semibold">This thread</b>
-      {report.agents?.coverage === "available" ? <>{row("Main agent", formatUsd(Math.max(0, report.cost.total - ownAgents)))}{row("Its subagents", agentLabel(report.agents))}</> : row("Subagents (known portion)", agentLabel(report.agents))}
-      {row("Displayed amount", formatAmount(report.cost.total, report.estimated))}
-      {family.children.length > 0 ? <>
-      <b className="mt-3 mb-1 block border-t border-border pt-2 font-semibold">With children</b>
-      {known ? <>{row("Main agent", formatUsd(Math.max(0, report.cost.total - ownAgents)))}{row("Child threads, own calls", formatUsd(Math.max(0, family.total - report.cost.total - (allAgents - ownAgents))))}{row("All subagents", agentLabel(family.agents))}<span className="block text-[11px] text-muted-foreground">This thread {formatUsd(ownAgents)} · children {formatUsd(Math.max(0, allAgents - ownAgents))}</span></> : <>{row("This thread", formatAmount(report.cost.total, report.estimated))}{row("Child threads", formatUsd(Math.max(0, family.total - report.cost.total)))}<span className="block text-[11px] text-muted-foreground">Agent breakdown is incomplete; known agents are already in these totals.</span></>}
-      <span className="mt-1 block border-t border-border pt-1">{row("Total with children", formatAmount(family.total, family.estimated))}</span>
+      <b className="mb-1 block font-semibold">{scope === "thread" ? "This thread" : scope === "family" ? "With children" : "Cost calculation"}</b>
+      {scope !== "family" && hasOwnAgents ? <>
+      {report.agents?.coverage === "available" ? <>
+        {row("Main agent", formatAmount(Math.max(0, report.cost.total - ownAgents), report.estimated))}
+        {row("Its subagents", agentLabel(report.agents))}
+      </> : report.agents?.rows.length ? row("Subagents (known portion)", agentLabel(report.agents)) : null}
       </> : null}
+      <span className={scope === "family" || !hasOwnAgents ? "block" : "mt-1 block border-t border-border pt-1"}>{row("This thread", formatAmount(report.cost.total, report.estimated))}</span>
+      {scope !== "thread" && family.children.length > 0 ? <>
+        {row(family.children.length < 50 ? `Child threads · ${family.children.length}` : "Child threads", formatAmount(Math.max(0, family.total - report.cost.total), family.estimated))}
+        <span className="mt-1 block border-t border-border pt-1 font-semibold [&_b]:font-semibold">{row("Total with children", formatAmount(family.total, family.estimated))}</span>
+      </> : null}
+      {scope !== "family" && report.agents?.coverage !== "available" && !!report.agents?.rows.length ? <span className="mt-1 block text-[11px] text-muted-foreground">Agent breakdown is incomplete; known agents are already in these totals.</span> : null}
     </span> : null}
   </span>;
 }

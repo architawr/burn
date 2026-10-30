@@ -31,7 +31,7 @@ export const HOT_MULTIPLE = 2;
 export const wantsBudgetFocus = (params: JsonValue | null): boolean =>
   typeof params === "object" && params !== null && !Array.isArray(params) && params.focus === "budget";
 
-function Kpi({ label, value, sub }: { label: string; value: string; sub: string }): ReactNode {
+function Kpi({ label, value, sub }: { label: string; value: ReactNode; sub: string }): ReactNode {
   return (
     <div className="rounded-lg bg-surface-raised px-3 py-2.5">
       <div className="text-[11px] text-muted-foreground">{label}</div>
@@ -51,11 +51,11 @@ function Kpis({ answer, report, atList }: { answer: UsageAnswer; report: UsageRe
   const share = budget !== null && !tokenOnly ? `${Math.round((own / budget.amount) * 100)}% of ${formatBudget(budget.amount)} budget` : "No budget";
   return (
     <div className="grid grid-cols-[repeat(auto-fit,minmax(8.5rem,1fr))] gap-2" data-testid="kpis">
-      <CostBreakdown answer={answer}><Kpi label="This thread" value={usageLabel(report)} sub={atList ? "At list price" : share} /></CostBreakdown>
+      <Kpi label="This thread" value={<CostBreakdown answer={answer} scope="thread">{usageLabel(report)}</CostBreakdown>} sub={atList ? "At list price" : share} />
       {kids > 0 ? (
         <Kpi
           label={`With ${kids} ${kids === 1 ? "child" : "children"}`}
-          value={formatAmount(family.total, family.estimated)}
+          value={<CostBreakdown answer={answer} scope="family">{formatAmount(family.total, family.estimated)}</CostBreakdown>}
           sub={`+${formatUsd(fromKids)} in children (${family.total > 0 ? Math.round((fromKids / family.total) * 100) : 0}%)`}
         />
       ) : (
